@@ -38,6 +38,9 @@ from kalvex.core.execution import PaperEngine
 from kalvex.core.instruments import DEFAULT_BOOK
 from kalvex.core.market_data import SimFeedProvider
 from kalvex.core.risk import RiskConfig
+from kalvex.core.security import TokenStore
+from kalvex.core.session import BrokerSession, ConnectionState
+from kalvex.ui.connect_dialog import ConnectDialog
 from kalvex.ui.nav_sidebar import NavSidebar
 from kalvex.ui.pages.activity_page import ActivityPage
 from kalvex.ui.pages.brain_page import BrainPage
@@ -92,6 +95,10 @@ class MainWindow(QMainWindow):
                              mode=BotMode.PAPER,
                              instruments=DEFAULT_BOOK, cycle_seconds=1.0)
 
+        # ---------------- broker session (OAuth connect/disconnect) ------
+        self.token_store = TokenStore("data")
+        self.session = BrokerSession(self.token_store)
+
         # ---------------- UI shell ----------------
         central = QWidget()
         central.setObjectName("root")
@@ -135,11 +142,19 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.page_charts.set_symbols(list(DEFAULT_BOOK.keys()))
+        self._load_session_config()   # needs the settings page to exist
 
         # ---------------- wiring ----------------
         self.nav.page_selected.connect(self._show_page)
         self.top_bar.kill_switch_requested.connect(self._kill_switch)
         self.top_bar.start_stop_clicked.connect(self._toggle_bot)
+        self.top_bar.connect_clicked.connect(self._on_connect_clicked)
+        self.page_settings.connect_requested.connect(self._on_connect_clicked)
+        self.page_settings.disconnect_requested.connect(self._on_disconnect)
+        self.page_settings.api_key.editingFinished.connect(self._save_session_config)
+        self.page_settings.api_secret.editingFinished.connect(self._save_session_config)
+        self.page_settings.redirect.editingFinished.connect(self._save_session_config)
+        self.page_settings.algo_name.editingFinished.connect(self._save_session_config)
         self.bot.thought.connect(self._on_thought)
         self.bot.pnl_update.connect(self._on_pnl)
         self.bot.state_changed.connect(self.top_bar.set_state)
@@ -182,6 +197,7 @@ class MainWindow(QMainWindow):
                             "BUY" if t.side == _Side.BUY else "SELL")
 
     def _refresh_ui(self) -> None:
+        self._refresh_broker_ui()
         from kalvex.core import indicators as ind
         bars = self.feed.bars("NIFTY 50")
         if len(bars) > 5:
@@ -262,6 +278,89 @@ class MainWindow(QMainWindow):
                 "last": last[0]["thought"] if last else "—"})
         self.page_brain.set_strategies(brain_rows)
         self.page_brain.set_reviews(self.db.recent_reviews(30))
+
+    # ------------------------------------------------------------------ #
+    # broker session: connect / disconnect
+    # ------------------------------------------------------------------ #
+    def _load_session_config(self) -> None:
+        cfg = {
+            "client_id": self.db.get_setting("api_key", ""),
+            "client_secret": self.db.get_setting("api_secret", ""),
+            "redirect_uri": self.db.get_setting("redirect_uri", ""),
+            "algo_name": self.db.get_setting("algo_name", ""),
+            "static_ip": self.db.get_setting("static_ip", ""),
+        }
+        self.session.configure(cfg["client_id"], cfg["client_secret"],
+                               cfg["redirect_uri"], cfg["algo_name"],
+                               sandbox=True)
+        self.page_settings.set_broker_fields(cfg)
+        self._refresh_broker_ui()
+
+    def _save_session_config(self) -> None:
+        cfg = self.page_settings.broker_config()
+        for key in ("client_id", "client_secret", "redirect_uri", "algo_name",
+                    "static_ip"):
+            self.db.set_setting(key, cfg[key])
+        self.session.configure(cfg["client_id"], cfg["client_secret"],
+                               cfg["redirect_uri"], cfg["algo_name"],
+                               sandbox=True)
+
+    def _refresh_broker_ui(self) -> None:
+        st = self.session.status()
+        self.top_bar.set_broker(st.describe(), st.state.value)
+        self.page_settings.set_broker_status(
+            st.describe() + (f"  ·  algo={st.algo_name}" if st.algo_name else ""),
+            st.state == ConnectionState.CONNECTED)
+
+    def _on_connect_clicked(self) -> None:
+        st = self.session.status()
+        if st.state == ConnectionState.CONNECTED:
+            self._on_disconnect()
+            return
+        self._save_session_config()
+        dlg = ConnectDialog(self.session, self)
+        dlg.connected.connect(self._on_broker_connected)
+        dlg.exec()
+
+    def _on_broker_connected(self, info: dict) -> None:
+        self.db.set_setting("api_key", info["client_id"])
+        self.db.set_setting("api_secret", info["client_secret"])
+        self.db.set_setting("redirect_uri", info["redirect_uri"])
+        self.db.set_setting("algo_name", info["algo_name"])
+        self.db.log("INFO", "Auth", "BROKER_CONNECTED",
+                    f"token valid until {info['expires_at']} "
+                    f"(03:30 IST rule); sandbox={info['sandbox']}")
+        self._refresh_broker_ui()
+        # best-effort funds display (single call at connect; failures are fine)
+        try:
+            funds = self.session.adapter().get_funds()
+            avail = float(funds.get("available_margin", 0.0) or 0.0)
+            self.top_bar.funds_val.setText(f"₹ {avail:,.0f}")
+        except Exception as e:
+            self.db.log("WARNING", "Broker", "FUNDS_FETCH_FAILED",
+                        repr(e)[:200])
+            self.top_bar.funds_val.setText("₹ —")
+        self._on_toast("Upstox broker CONNECTED — token stored (DPAPI). "
+                       "Trading remains in Paper mode until Auto opt-in.")
+
+    def _on_disconnect(self) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Disconnect broker")
+        box.setText("Disconnect and wipe the stored access token?")
+        box.setInformativeText(
+            "Live order routing becomes impossible until the next daily "
+            "OAuth login. Paper trading keeps working.")
+        ok = box.addButton("Disconnect", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not ok:
+            return
+        self.session.disconnect()
+        self.top_bar.funds_val.setText("₹ —")
+        self.db.log("INFO", "Auth", "BROKER_DISCONNECTED", "token wiped")
+        self._refresh_broker_ui()
+        self._on_toast("Broker disconnected — token wiped. Paper mode continues.")
 
     # ------------------------------------------------------------------ #
     # bot control

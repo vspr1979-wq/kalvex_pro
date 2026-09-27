@@ -24,6 +24,7 @@ class TopBar(QFrame):
     mode_changed = Signal(str)
     kill_switch_requested = Signal()
     start_stop_clicked = Signal()
+    connect_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -46,13 +47,24 @@ class TopBar(QFrame):
         brand_box.addWidget(sub)
         root.addLayout(brand_box)
 
-        root.addWidget(self._chip_frame("FEED", "SIM · disconnected", "chipViolet"))
-        self.funds_chip = self._chip_frame("FUNDS", "₹ —", "")
+        root.addWidget(self._chip_frame("FEED", "SIM · demo", "chipViolet"))
+        self.funds_chip, self.funds_val = self._chip("FUNDS", "₹ —", "")
         root.addWidget(self.funds_chip)
         self.pnl_chip, self.pnl_val = self._chip("P&L TODAY", "₹ —", "chipCyan")
         root.addWidget(self.pnl_chip)
 
         root.addStretch(1)
+
+        # --- broker connection ------------------------------------------
+        self.broker_chip, self.broker_val = self._chip("BROKER", "DISCONNECTED", "chipRed")
+        root.addWidget(self.broker_chip)
+        self.connect_btn = QPushButton("CONNECT")
+        self.connect_btn.setObjectName("ember")
+        self.connect_btn.setToolTip(
+            "Upstox OAuth login (daily — token expires 03:30 IST, no refresh "
+            "token). Disconnect wipes the stored token.")
+        self.connect_btn.clicked.connect(self.connect_clicked.emit)
+        root.addWidget(self.connect_btn)
 
         # --- bot state ---------------------------------------------------
         self.state_chip, self.state_val = self._chip("BOT", "IDLE", "")
@@ -138,7 +150,33 @@ class TopBar(QFrame):
             self.start_btn.setText("▶ START BOT")
 
     def set_feed(self, text: str) -> None:
-        pass  # chip value updated via set_feed_text
+        pass  # legacy stub
+
+    def set_broker(self, describe: str, state: str) -> None:
+        """state: ConnectionState value — drives chip colour + button label."""
+        short = describe
+        if len(short) > 30:
+            short = short.split(" · token")[0] + " · until 03:30 IST"
+        self.broker_val.setText(short)
+        self.broker_val.setToolTip(describe)
+        if state == "CONNECTED":
+            self.broker_val.setStyleSheet("color: #35D0C8;")
+            self.connect_btn.setText("DISCONNECT")
+            self.connect_btn.setObjectName("ghost")
+        elif state in ("EXPIRED", "ERROR"):
+            self.broker_val.setStyleSheet("color: #FF5D5D;")
+            self.connect_btn.setText("RE-LOGIN")
+            self.connect_btn.setObjectName("ember")
+        elif state == "CONNECTING":
+            self.broker_val.setStyleSheet("color: #FFB020;")
+            self.connect_btn.setText("CONNECTING…")
+            self.connect_btn.setObjectName("ember")
+        else:
+            self.broker_val.setStyleSheet("color: #E8EEF6;")
+            self.connect_btn.setText("CONNECT")
+            self.connect_btn.setObjectName("ember")
+        self.connect_btn.style().unpolish(self.connect_btn)
+        self.connect_btn.style().polish(self.connect_btn)
 
     def _confirm_kill(self) -> None:
         box = QMessageBox(self)

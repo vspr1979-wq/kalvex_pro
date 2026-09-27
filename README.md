@@ -117,6 +117,28 @@ UI thread (PySide6)                      Bot thread (QThread)
 * Kill switch, daily loss circuit and hard ceilings are engine-side, not
   UI-side.
 
+## Broker connect / disconnect (verified OAuth flow)
+
+The top-bar **BROKER** chip and **CONNECT/DISCONNECT** button (also on
+Settings → Broker) drive a real session state machine
+(`kalvex/core/session.py`):
+
+1. **CONNECT** opens a dialog: API key / secret / redirect URI / algo name →
+   `OPEN UPSTOX LOGIN IN BROWSER` (verified dialog URL) → paste the
+   redirect URL (or just the `code`) → **CONNECT** exchanges it at the
+   verified `POST /v2/login/authorization/token` endpoint.
+2. The token is stored with **Windows DPAPI** and its expiry is computed
+   from the verified rule: **03:30 IST the next day — no refresh token**,
+   so re-login is a daily step. The chip shows
+   `UPSTOX · CONNECTED · until …` (or `TOKEN EXPIRED` after cut-off).
+3. **DISCONNECT** wipes the token — live routing becomes impossible until
+   the next login. Paper trading keeps working either way.
+4. On connect the app best-effort fetches funds to fill the FUNDS chip;
+   failures are logged, never fatal.
+
+States: `DISCONNECTED · CONNECTING · CONNECTED · EXPIRED · ERROR` —
+all covered by the offline self-test (fake token exchanger, no network).
+
 ## Upstox verification status (docs checked Sept 2026)
 
 VERIFIED — implemented as documented:

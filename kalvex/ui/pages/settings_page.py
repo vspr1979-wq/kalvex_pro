@@ -6,11 +6,14 @@ see README checklist before enabling live anything.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QHBoxLayout,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QTabWidget,
@@ -30,6 +33,9 @@ def _scrollable(content: QWidget) -> QWidget:
 
 
 class SettingsPage(QWidget):
+    connect_requested = Signal()
+    disconnect_requested = Signal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
@@ -51,35 +57,80 @@ class SettingsPage(QWidget):
         root.addWidget(tabs, stretch=1)
 
     # ------------------------------------------------------------------ #
+    # broker connection helpers
+    # ------------------------------------------------------------------ #
+    def _connection_row(self) -> QWidget:
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.connect_btn = QPushButton("CONNECT / RE-LOGIN…")
+        self.connect_btn.setObjectName("ember")
+        self.connect_btn.clicked.connect(self.connect_requested.emit)
+        self.disconnect_btn = QPushButton("DISCONNECT")
+        self.disconnect_btn.setObjectName("ghost")
+        self.disconnect_btn.clicked.connect(self.disconnect_requested.emit)
+        lay.addWidget(self.connect_btn)
+        lay.addWidget(self.disconnect_btn)
+        lay.addStretch(1)
+        return row
+
+    def broker_config(self) -> dict:
+        return {
+            "client_id": self.api_key.text().strip(),
+            "client_secret": self.api_secret.text().strip(),
+            "redirect_uri": self.redirect.text().strip(),
+            "algo_name": self.algo_name.text().strip(),
+            "static_ip": self.static_ip.text().strip(),
+        }
+
+    def set_broker_fields(self, cfg: dict) -> None:
+        self.api_key.setText(cfg.get("client_id", ""))
+        self.api_secret.setText(cfg.get("client_secret", ""))
+        self.redirect.setText(cfg.get("redirect_uri", ""))
+        self.algo_name.setText(cfg.get("algo_name", ""))
+        self.static_ip.setText(cfg.get("static_ip", ""))
+
+    def set_broker_status(self, describe: str, connected: bool) -> None:
+        self.token_status.setText(describe)
+        self.token_status.setStyleSheet(
+            f"color: {'#35D0C8' if connected else '#E8EEF6'};")
+        self.disconnect_btn.setEnabled(connected)
+
+    # ------------------------------------------------------------------ #
     def _broker_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
 
-        api_key = QLineEdit()
-        api_key.setPlaceholderText("client_id from Upstox Developer Apps")
-        api_secret = QLineEdit()
-        api_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        api_secret.setPlaceholderText("client_secret — DPAPI-encrypted, never logged")
-        redirect = QLineEdit()
-        redirect.setPlaceholderText("must EXACTLY match the registered redirect URI")
-        algo_name = QLineEdit()
-        algo_name.setPlaceholderText="e.g. KalvexPro_v1 (configured in My Apps)"
-        static_ip = QLineEdit()
-        static_ip.setPlaceholderText("registered primary/secondary IP")
+        self.api_key = QLineEdit()
+        self.api_key.setPlaceholderText("client_id from Upstox Developer Apps")
+        self.api_secret = QLineEdit()
+        self.api_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_secret.setPlaceholderText("client_secret — DPAPI-encrypted, never logged")
+        self.redirect = QLineEdit()
+        self.redirect.setPlaceholderText("must EXACTLY match the registered redirect URI")
+        self.algo_name = QLineEdit()
+        self.algo_name.setPlaceholderText="e.g. KalvexPro_v1 (configured in My Apps)"
+        self.static_ip = QLineEdit()
+        self.static_ip.setPlaceholderText("registered primary/secondary IP")
+        self.token_status = QLineEdit("DISCONNECTED")
+        self.token_status.setReadOnly(True)
 
         lay.addWidget(section_block(
             "UPSTOX OAUTH 2.0 — VERIFIED FLOW",
             [
-                form_row("API key (client_id)", api_key),
-                form_row("API secret (client_secret)", api_secret),
-                form_row("Redirect URI", redirect),
-                form_row("Token status", QLineEdit("Not connected"),
+                form_row("API key (client_id)", self.api_key),
+                form_row("API secret (client_secret)", self.api_secret),
+                form_row("Redirect URI", self.redirect),
+                form_row("Token status", self.token_status,
                          hint="VERIFIED: no refresh token exists — access token "
                               "expires 03:30 IST daily; re-auth is a daily "
                               "human step (or v3 auth/token/request flow)."),
-                form_row("Login", QLineEdit("— opens OAuth dialog —"),
-                         hint="api.upstox.com/v2/login/authorization/dialog"),
+                form_row("Connection", self._connection_row(),
+                         hint="Opens the verified OAuth dialog "
+                              "(api.upstox.com/v2/login/authorization/dialog). "
+                              "Disconnect wipes the DPAPI token."),
             ],
             note="Token exchange: POST /v2/login/authorization/token "
                  "(grant_type=authorization_code). Store: Windows DPAPI.",
@@ -91,10 +142,10 @@ class SettingsPage(QWidget):
         lay.addWidget(section_block(
             "ORDER API CONSTRAINTS — VERIFIED",
             [
-                form_row("algo_name on orders", algo_name,
+                form_row("algo_name on orders", self.algo_name,
                          hint="VERIFIED: orders must send X-Algo-Name header "
                               "(Algo ID stays in My Apps config)."),
-                form_row("Static IP", static_ip,
+                form_row("Static IP", self.static_ip,
                          hint="VERIFIED: Place/Modify/Cancel/GTT/Exit-All are "
                               "restricted to registered static IPs."),
                 form_row("Sandbox mode", sandbox),

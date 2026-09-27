@@ -26,6 +26,7 @@ from kalvex.core.execution import PaperEngine
 from kalvex.core.risk import RiskConfig, RiskManager
 from kalvex.core.bot import BotWorker
 from kalvex.core.strategies import TUNE_BANDS
+from kalvex.core.session import IST
 
 
 def build_world(db_path: str, seed: int = 11, capital: float = 500_000.0):
@@ -184,6 +185,58 @@ def main() -> int:
         rev2 = review_strategy("orb", {"target_rr": 1.6}, fake_losing, auto_tune=True)
         check("5+ consecutive losses -> hard auto-disable",
               rev2.disable_strategy)
+
+        # ---- broker session: connect / disconnect / expiry rule --------
+        from datetime import datetime, timedelta
+        from kalvex.core.session import (
+            BrokerSession, ConnectionState, compute_token_expiry, extract_code)
+        from kalvex.core.security import TokenStore
+
+        # verified rule: expiry is the 03:30 IST cut-off, never now+24h
+        eve = datetime(2026, 9, 27, 18, 0, tzinfo=IST)
+        exp = compute_token_expiry(eve)
+        check("token expiry = next 03:30 IST (not +24h)",
+              exp == datetime(2026, 9, 28, 3, 30, tzinfo=IST), str(exp))
+        early = compute_token_expiry(datetime(2026, 9, 28, 2, 0, tzinfo=IST))
+        check("02:00 IST token still dies at 03:30 same morning",
+              early == datetime(2026, 9, 28, 3, 30, tzinfo=IST), str(early))
+
+        check("extract_code handles full redirect URL",
+              extract_code("https://127.0.0.1:8765/cb?code=mk404x&state=XX") == "mk404x")
+        check("extract_code handles bare code",
+              extract_code("mk404x") == "mk404x")
+
+        store = TokenStore(Path(tmp) / "tokens")
+        sess = BrokerSession(store, client_id="key", client_secret="sec",
+                             redirect_uri="http://127.0.0.1:8765/cb",
+                             algo_name="KalvexPro_v1")
+        check("fresh session is DISCONNECTED",
+              sess.status().state == ConnectionState.DISCONNECTED)
+
+        def fake_exchanger(code, cid, secret, redirect):
+            return {"access_token": f"tok-{code}"}
+
+        st = sess.connect_with_code("http://127.0.0.1:8765/cb?code=abc123",
+                                    exchanger=fake_exchanger)
+        check("connect_with_code reaches CONNECTED",
+              st.state == ConnectionState.CONNECTED and st.expires_at != "")
+
+        st = sess.connect_with_code("nonsense without code",
+                                    exchanger=fake_exchanger)
+        check("bad paste -> ERROR with detail",
+              st.state == ConnectionState.ERROR, st.detail)
+
+        # re-connect then disconnect: token must be wiped
+        sess.connect_with_code("abc123", exchanger=fake_exchanger)
+        st = sess.disconnect()
+        check("disconnect wipes token -> DISCONNECTED",
+              st.state == ConnectionState.DISCONNECTED and store.load()[0] is None)
+
+        # expiry transition
+        store.save("old-token",
+                   (datetime.now(IST) - timedelta(hours=1)).isoformat())
+        check("past 03:30 cut-off -> EXPIRED",
+              sess.status().state == ConnectionState.EXPIRED)
 
         # ---- sample thought stream ------------------------------------
         rows = db.query("SELECT ts, stage, strategy_key, thought FROM decision_log "
