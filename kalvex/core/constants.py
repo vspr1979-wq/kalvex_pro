@@ -31,6 +31,7 @@ AUTO_MODE_LOCKED = True
 class PageId(str, Enum):
     DASHBOARD = "dashboard"
     CHARTS = "charts"
+    BRAIN = "brain"
     STRATEGIES = "strategies"
     ACTIVITY = "activity"  # Positions / Orders / Trades
     LOGS = "logs"
@@ -40,6 +41,7 @@ class PageId(str, Enum):
 PAGE_TITLES: dict[PageId, str] = {
     PageId.DASHBOARD: "Dashboard",
     PageId.CHARTS: "Charts",
+    PageId.BRAIN: "Bot Brain",
     PageId.STRATEGIES: "Strategies",
     PageId.ACTIVITY: "Positions / Orders",
     PageId.LOGS: "Logs",

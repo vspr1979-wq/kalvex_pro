@@ -1,9 +1,10 @@
-"""Settings page — Broker / Risk / Strategies / Indicators / Session hours / UI.
+"""Settings — Broker / Risk / Strategies / Indicators / Session / UI.
 
-Layout only: fields are placeholders and nothing is persisted yet.
-Anything marked UNKNOWN must be re-verified against current Upstox docs
-before implementation (see README checklist).
+Broker tab states VERIFIED facts (Sept 2026 docs) and explicit UNKNOWNs —
+see README checklist before enabling live anything.
 """
+
+from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,16 +19,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from kalvex.ui.widgets import (
-    form_row,
-    hint_label,
-    page_header,
-    section_block,
-)
+from kalvex.ui.widgets import form_row, page_header, section_block
 
 
 def _scrollable(content: QWidget) -> QWidget:
-    """Wrap tab content in a scroll area so 768px-tall displays never clip."""
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setWidget(content)
@@ -35,20 +30,16 @@ def _scrollable(content: QWidget) -> QWidget:
 
 
 class SettingsPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(20, 16, 20, 12)
+        root.setSpacing(10)
 
-        root.addWidget(
-            page_header(
-                "Settings",
-                "Broker, risk ceilings, strategies, indicators, session hours and UI. "
-                "Hard-coded risk ceilings always cap the user settings below.",
-            )
-        )
+        root.addWidget(page_header(
+            "Settings",
+            "Hard-coded risk ceilings always cap the values below."))
 
         tabs = QTabWidget()
         tabs.addTab(_scrollable(self._broker_tab()), "Broker")
@@ -60,324 +51,242 @@ class SettingsPage(QWidget):
         root.addWidget(tabs, stretch=1)
 
     # ------------------------------------------------------------------ #
-    # Broker
-    # ------------------------------------------------------------------ #
     def _broker_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
 
         api_key = QLineEdit()
-        api_key.setPlaceholderText("Upstox API key (stored via Windows DPAPI)")
+        api_key.setPlaceholderText("client_id from Upstox Developer Apps")
         api_secret = QLineEdit()
         api_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        api_secret.setPlaceholderText("API secret (never logged, never plaintext at rest)")
+        api_secret.setPlaceholderText("client_secret — DPAPI-encrypted, never logged")
         redirect = QLineEdit()
-        redirect.setPlaceholderText("https://127.0.0.1:port/callback  (must match app registration)")
+        redirect.setPlaceholderText("must EXACTLY match the registered redirect URI")
+        algo_name = QLineEdit()
+        algo_name.setPlaceholderText="e.g. KalvexPro_v1 (configured in My Apps)"
+        static_ip = QLineEdit()
+        static_ip.setPlaceholderText("registered primary/secondary IP")
 
-        lay.addWidget(
-            section_block(
-                "UPSTOX OAUTH 2.0",
-                [
-                    form_row("API key", api_key),
-                    form_row("API secret", api_secret),
-                    form_row("Redirect URI", redirect),
-                    form_row(
-                        "Token status",
-                        QLineEdit("Not connected — / —"),
-                        hint="Access / refresh / expiry — DPAPI-protected. Auto refresh on expiry (worker thread).",
-                    ),
-                ],
-                note="Flow: authorization code → access + refresh token. Scopes per current Upstox docs. "
-                "Tokens encrypted with Windows DPAPI — never plaintext on disk.",
-            )
-        )
+        lay.addWidget(section_block(
+            "UPSTOX OAUTH 2.0 — VERIFIED FLOW",
+            [
+                form_row("API key (client_id)", api_key),
+                form_row("API secret (client_secret)", api_secret),
+                form_row("Redirect URI", redirect),
+                form_row("Token status", QLineEdit("Not connected"),
+                         hint="VERIFIED: no refresh token exists — access token "
+                              "expires 03:30 IST daily; re-auth is a daily "
+                              "human step (or v3 auth/token/request flow)."),
+                form_row("Login", QLineEdit("— opens OAuth dialog —"),
+                         hint="api.upstox.com/v2/login/authorization/dialog"),
+            ],
+            note="Token exchange: POST /v2/login/authorization/token "
+                 "(grant_type=authorization_code). Store: Windows DPAPI.",
+        ))
 
-        sandbox = QCheckBox("Sandbox / safe-testing toggle (blocks live order routing)")
+        sandbox = QCheckBox("Sandbox toggle (official SDK: Configuration(sandbox=True))")
         sandbox.setChecked(True)
 
-        static_ip = QLineEdit()
-        static_ip.setPlaceholderText("Registered static IP for order API, if required")
-
-        algo_name = QLineEdit()
-        algo_name.setPlaceholderText("e.g. KalvexPro_v1")
-        algo_id = QLineEdit()
-        algo_id.setPlaceholderText("Broker/exchange-assigned algo id — UNKNOWN, verify")
-
-        lay.addWidget(
-            section_block(
-                "ORDER API CONSTRAINTS",
-                [
-                    form_row("Sandbox mode", sandbox),
-                    form_row("Static IP registration", static_ip, hint="Required for order API only if current docs say so — verify."),
-                    form_row("algo_name on orders", algo_name, hint="Attach if broker/exchange requires it — verify."),
-                    form_row("algo_id / strategy tag", algo_id, hint="UNKNOWN until confirmed in current Upstox/algo-registration docs."),
-                ],
-                note="Rate limit: stay under 10 orders/second unless a registered algo product is used — "
-                "verify the current number. v1 order types: Limit / SL-L preferred; GTT if available; "
-                "raw MARKET only if currently allowed for algo/API — otherwise locked.",
-            )
-        )
+        lay.addWidget(section_block(
+            "ORDER API CONSTRAINTS — VERIFIED",
+            [
+                form_row("algo_name on orders", algo_name,
+                         hint="VERIFIED: orders must send X-Algo-Name header "
+                              "(Algo ID stays in My Apps config)."),
+                form_row("Static IP", static_ip,
+                         hint="VERIFIED: Place/Modify/Cancel/GTT/Exit-All are "
+                              "restricted to registered static IPs."),
+                form_row("Sandbox mode", sandbox),
+                form_row("Rate limits", QLineEdit("10/sec · 500/min · 2000/30min"),
+                         hint="VERIFIED (order APIs). SEBI-registered algos: "
+                              "50/sec after exchange registration. App "
+                              "throttles at 10/sec regardless."),
+                form_row("Order types", QLineEdit("LIMIT · SL · SL-M"),
+                         hint="UNKNOWN whether raw MARKET is allowed for algo/"
+                              "API — the live adapter refuses MARKET until "
+                              "confirmed. GTT schema UNKNOWN."),
+            ],
+            note="MCX/commodities: out of scope for v1 (UNKNOWN whether API "
+                 "accepts MCX orders).",
+        ))
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ #
-    # Risk
     # ------------------------------------------------------------------ #
     def _risk_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
 
-        risk_pct = QDoubleSpinBox()
-        risk_pct.setRange(0.1, 5.0)
-        risk_pct.setValue(1.0)
-        risk_pct.setSuffix(" %")
+        def spin(lo, hi, val, suffix="", prefix="", dec=1):
+            if dec == 1:
+                s = QDoubleSpinBox()
+                s.setRange(lo, hi)
+                s.setValue(val)
+                s.setSingleStep(0.1)
+            else:
+                s = QSpinBox()
+                s.setRange(int(lo), int(hi))
+                s.setValue(int(val))
+            if suffix:
+                s.setSuffix(suffix)
+            if prefix:
+                s.setPrefix(prefix)
+            return s
 
-        max_positions = QSpinBox()
-        max_positions.setRange(1, 20)
-        max_positions.setValue(3)
-
-        max_lots = QSpinBox()
-        max_lots.setRange(1, 50)
-        max_lots.setValue(2)
-
-        max_orders_min = QSpinBox()
-        max_orders_min.setRange(1, 200)
-        max_orders_min.setValue(20)
-
-        daily_loss = QDoubleSpinBox()
-        daily_loss.setRange(0, 1_000_000)
-        daily_loss.setValue(5_000)
-        daily_loss.setPrefix("₹ ")
-
-        profit_stop = QDoubleSpinBox()
-        profit_stop.setRange(0, 1_000_000)
-        profit_stop.setValue(10_000)
-        profit_stop.setPrefix("₹ ")
-
-        profit_stop_on = QCheckBox("Enable daily profit stop (stop bot, keep positions)")
-        profit_stop_on.setChecked(False)
-
-        trail_after = QDoubleSpinBox()
-        trail_after.setRange(0, 1_000_000)
-        trail_after.setValue(500)
-        trail_after.setPrefix("₹ ")
-
+        capital = spin(10_000, 100_000_000, 500_000, prefix="₹ ", dec=0)
+        risk_pct = spin(0.1, 2.0, 1.0, suffix=" %",
+                        )  # hard cap 2%
+        max_pos = spin(1, 6, 3, dec=0)
+        max_lots = spin(1, 10, 2, dec=0)
+        max_om = spin(1, 60, 20, dec=0)
+        daily_loss = spin(0, 1_000_000, 5000, prefix="₹ ", dec=0)
+        profit_stop = spin(0, 1_000_000, 10000, prefix="₹ ", dec=0)
+        trail_after = spin(0, 1_000_000, 500, prefix="₹ ", dec=0)
+        margin_factor = spin(0.05, 1.0, 0.20, suffix=" × notional")
         square_off = QTimeEdit()
         square_off.setDisplayFormat("HH:mm")
         square_off.setTime(square_off.time().fromString("15:15", "HH:mm"))
+        ps_on = QCheckBox("Enable daily profit stop")
+        auto_tune = QCheckBox("Auto-apply self-improvement suggestions (within bands)")
 
-        lay.addWidget(
-            section_block(
-                "PER-TRADE LIMITS",
-                [
-                    form_row("Max risk per trade", risk_pct, hint="Position size = capital × risk% ÷ (entry − SL), rounded to exchange lot size."),
-                    form_row("Max open positions", max_positions),
-                    form_row("Max lots per order", max_lots),
-                    form_row("Max orders per minute", max_orders_min, hint="Self-throttle; also stay under the broker's per-second cap."),
-                ],
-            )
-        )
-        lay.addWidget(
-            section_block(
-                "DAILY LIMITS & EXITS",
-                [
-                    form_row("Daily max loss", daily_loss, hint="→ flatten paper/live positions and stop the bot."),
-                    form_row("Daily profit stop", profit_stop),
-                    form_row("", profit_stop_on),
-                    form_row("Trailing SL starts after", trail_after, hint="Trailing SL only after a minimum profit."),
-                    form_row("Square-off time (IST)", square_off, hint="Force flat before market close."),
-                ],
-            )
-        )
-        lay.addWidget(
-            hint_label(
-                "Kill switch (top bar + tray): cancel open orders → flatten → stop strategies. "
-                "Hard-coded ceilings cannot be exceeded by user settings."
-            )
-        )
+        lay.addWidget(section_block(
+            "CAPITAL & PER-TRADE",
+            [
+                form_row("Trading capital", capital),
+                form_row("Max risk per trade", risk_pct,
+                         hint="HARD CAP 2.0% — the editor cannot exceed it."),
+                form_row("Margin factor (paper)", margin_factor,
+                         hint="PLACEHOLDER — live margins must come from the "
+                              "broker (UNKNOWN %)."),
+            ]))
+        lay.addWidget(section_block(
+            "CEILINGS (HARD-CODED IN THE ENGINE)",
+            [
+                form_row("Max open positions", max_pos, hint="hard cap 6"),
+                form_row("Max lots per order", max_lots, hint="hard cap 10"),
+                form_row("Max orders per minute", max_om,
+                         hint="hard cap 60/min AND ≤10/sec (broker)."),
+                form_row("Daily max loss", daily_loss,
+                         hint="→ flatten + stop bot (hard 5% of capital)."),
+                form_row("Daily profit stop", profit_stop),
+                form_row("", ps_on),
+                form_row("Trailing SL arms after", trail_after),
+                form_row("Square-off time (IST)", square_off),
+                form_row("Self-improvement", auto_tune),
+            ]))
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ #
-    # Strategies
     # ------------------------------------------------------------------ #
     def _strategies_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
-
-        default_mode = QComboBox()
-        default_mode.addItems(["Paper", "Semi-auto", "Auto (locked)"])
-
-        lay.addWidget(
-            section_block(
-                "V1 STRATEGY SET",
-                [
-                    form_row("Default mode for new strategies", default_mode),
-                    form_row("Opening Range Breakout", QCheckBox("Enabled (index / liquid F&O)")),
-                    form_row("EMA Crossover + VWAP", QCheckBox("Enabled")),
-                    form_row("Supertrend Trend-Follow", QCheckBox("Enabled")),
-                    form_row("RSI Mean-Reversion", QCheckBox("Enabled (cash / futures only in v1)")),
-                ],
-                note="Nice-to-have later: Bollinger squeeze, MACD momentum. "
-                "SMC FVG/OB/BOS/CHoCH: chart overlay + optional alert only.",
-            )
-        )
-
+        lay.addWidget(section_block(
+            "V1 STRATEGY SET (ONLY THESE)",
+            [
+                form_row("Opening Range Breakout", QCheckBox("Enabled (index / liquid F&O)")),
+                form_row("EMA Crossover + VWAP", QCheckBox("Enabled")),
+                form_row("Supertrend Trend-Follow", QCheckBox("Enabled")),
+                form_row("RSI Mean-Reversion", QCheckBox("Enabled (cash / futures only)")),
+            ],
+            note="Per-strategy parameters live on the Strategies page "
+                 "(editable within hard tune bands)."))
         options_on = QCheckBox("Enable index options buying (opt-in)")
-        strike_picker = QComboBox()
-        strike_picker.addItems(["ATM", "ATM + N strikes OTM"])
-        otm_width = QSpinBox()
-        otm_width.setRange(1, 10)
-        otm_width.setValue(2)
-        expiry = QComboBox()
-        expiry.addItems(["Current expiry (default)", "Next expiry"])
-        max_hold = QTimeEdit()
-        max_hold.setDisplayFormat("HH:mm")
-        max_hold.setTime(max_hold.time().fromString("00:45", "HH:mm"))
-
-        lay.addWidget(
-            section_block(
-                "OPTIONS (V1, LIMITED)",
-                [
-                    form_row("", options_on, hint="Index options buying only. No multi-leg complexity in v1."),
-                    form_row("Strike picker", strike_picker),
-                    form_row("OTM width (strikes)", otm_width),
-                    form_row("Expiry preference", expiry),
-                    form_row("Max holding time", max_hold, hint="Theta-aware time exit is mandatory. "
-                            "IV & Greeks shown only if the feed provides them — no invented pricing models."),
-                ],
-            )
-        )
+        width = QSpinBox()
+        width.setRange(0, 10)
+        width.setValue(0)
+        hold = QSpinBox()
+        hold.setRange(5, 240)
+        hold.setValue(45)
+        hold.setSuffix(" min")
+        lay.addWidget(section_block(
+            "OPTIONS (V1, LIMITED)",
+            [
+                form_row("", options_on,
+                         hint="Index options BUYING only. No multi-leg in v1."),
+                form_row("Strike picker", QComboBox(),  # populated in code
+                         hint="ATM / ATM ± N strikes OTM, current expiry first."),
+                form_row("OTM width (strikes)", width),
+                form_row("Max holding time", hold,
+                         hint="theta-aware time exit is mandatory; IV/Greeks "
+                              "only if the feed provides them (no invented "
+                              "pricing models)."),
+            ]))
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ #
-    # Indicators
     # ------------------------------------------------------------------ #
     def _indicators_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
-
-        ema_fast = QSpinBox()
-        ema_fast.setRange(2, 200)
-        ema_fast.setValue(9)
-        ema_slow = QSpinBox()
-        ema_slow.setRange(2, 400)
-        ema_slow.setValue(21)
-
-        st_period = QSpinBox()
-        st_period.setRange(2, 100)
-        st_period.setValue(10)
-        st_mult = QDoubleSpinBox()
-        st_mult.setRange(0.5, 10.0)
-        st_mult.setValue(3.0)
-        st_mult.setSingleStep(0.1)
-
-        rsi_period = QSpinBox()
-        rsi_period.setRange(2, 100)
-        rsi_period.setValue(14)
-        rsi_ob = QSpinBox()
-        rsi_ob.setRange(50, 100)
-        rsi_ob.setValue(70)
-        rsi_os = QSpinBox()
-        rsi_os.setRange(0, 50)
-        rsi_os.setValue(30)
-
-        lay.addWidget(
-            section_block(
-                "INDICATORS (pandas-ta FIRST; TA-LIB OPTIONAL)",
-                [
-                    form_row("EMA enabled", QCheckBox("On"), hint="Crossover core."),
-                    form_row("EMA fast / slow", ema_fast),
-                    form_row("", ema_slow),
-                    form_row("VWAP filter", QCheckBox("On (session VWAP)")),
-                    form_row("Supertrend enabled", QCheckBox("On")),
-                    form_row("Supertrend period / multiplier", st_period),
-                    form_row("", st_mult),
-                    form_row("RSI enabled", QCheckBox("On")),
-                    form_row("RSI period", rsi_period),
-                    form_row("RSI overbought / oversold", rsi_ob),
-                    form_row("", rsi_os),
-                    form_row("Bollinger squeeze (later)", QCheckBox("Off")),
-                    form_row("MACD momentum (later)", QCheckBox("Off")),
-                    form_row("SMC overlay (smartmoneyconcepts)", QCheckBox("Chart overlay / research only"),
-                             hint="Never the only live strategy."),
-                ],
-            )
-        )
+        lay.addWidget(section_block(
+            "INDICATORS (IN-HOUSE MATH; PANDAS-TA ADAPTER LATER)",
+            [
+                form_row("EMA", QCheckBox("On (fast/slow)"),
+                         hint="defaults 9/21 — band-locked on Strategies page"),
+                form_row("VWAP", QCheckBox("On (session-anchored)")),
+                form_row("Supertrend", QCheckBox("On (ATR 10 x 3.0)")),
+                form_row("RSI", QCheckBox("On (Wilder 14, 70/30)")),
+                form_row("Bollinger squeeze (later)", QCheckBox("Off")),
+                form_row("MACD (later)", QCheckBox("Off")),
+                form_row("SMC overlay (later)", QCheckBox("Off"),
+                         hint="smartmoneyconcepts = research overlay/alert "
+                              "only, never sole live strategy."),
+            ]))
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ #
-    # Session hours
     # ------------------------------------------------------------------ #
     def _session_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
 
-        start = QTimeEdit()
-        start.setDisplayFormat("HH:mm")
-        start.setTime(start.time().fromString("09:15", "HH:mm"))
-        end = QTimeEdit()
-        end.setDisplayFormat("HH:mm")
-        end.setTime(end.time().fromString("15:30", "HH:mm"))
-        square_off = QTimeEdit()
-        square_off.setDisplayFormat("HH:mm")
-        square_off.setTime(square_off.time().fromString("15:15", "HH:mm"))
-        pre_start = QTimeEdit()
-        pre_start.setDisplayFormat("HH:mm")
-        pre_start.setTime(pre_start.time().fromString("09:00", "HH:mm"))
+        def t(hhmm):
+            e = QTimeEdit()
+            e.setDisplayFormat("HH:mm")
+            e.setTime(e.time().fromString(hhmm, "HH:mm"))
+            return e
 
-        unattended = QCheckBox("Allow unattended bot operation (only during session hours)")
-        unattended.setChecked(True)
-
-        lay.addWidget(
-            section_block(
-                "SESSION (IST)",
-                [
-                    form_row("Pre-market start (auth/warm-up)", pre_start),
-                    form_row("Market open", start),
-                    form_row("Market close", end),
-                    form_row("Square-off time", square_off),
-                    form_row("Unattended operation", unattended),
-                ],
-                note="All timestamps logged in IST. The bot never runs unattended outside session hours, "
-                "and unattended operation requires Paper mode to have been used first.",
-            )
-        )
+        lay.addWidget(section_block(
+            "SESSION (IST)",
+            [
+                form_row("Pre-market warm-up", t("09:00")),
+                form_row("Market open", t("09:15")),
+                form_row("Market close", t("15:30")),
+                form_row("Square-off", t("15:15")),
+                form_row("Unattended operation",
+                         QCheckBox("Only during session hours")),
+            ],
+            note="The bot never runs unattended outside session hours, and "
+                 "unattended Auto requires Paper use first."))
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------------ #
-    # UI
     # ------------------------------------------------------------------ #
     def _ui_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(2)
-
         theme_cb = QComboBox()
-        theme_cb.addItems(["Dark (v1 only)"])
-        default_tf = QComboBox()
-        default_tf.addItems(["1m", "5m", "15m"])
-        default_tf.setCurrentIndex(1)
-
-        lay.addWidget(
-            section_block(
-                "APPEARANCE & BEHAVIOUR",
-                [
-                    form_row("Theme", theme_cb),
-                    form_row("Windows toast on semi-auto signals", QCheckBox("On")),
-                    form_row("Minimize to tray on close", QCheckBox("On")),
-                    form_row("Confirm before kill switch", QCheckBox("On (recommended)")),
-                    form_row("Default chart timeframe", default_tf),
-                ],
-            )
-        )
+        theme_cb.addItems(["Ember Terminal (dark)"])
+        speed = QSpinBox()
+        speed.setRange(1, 120)
+        speed.setValue(5)
+        speed.setSuffix("× realtime")
+        lay.addWidget(section_block(
+            "APPEARANCE & DEMO FEED",
+            [
+                form_row("Theme", theme_cb),
+                form_row("Windows toast on signals", QCheckBox("On")),
+                form_row("Minimize to tray on close", QCheckBox("On")),
+                form_row("Confirm before kill switch", QCheckBox("On (recommended)")),
+                form_row("Sim feed speed", speed,
+                         hint="SIMULATED feed clock multiplier for demos/self-tests."),
+            ]))
         lay.addStretch(1)
         return w

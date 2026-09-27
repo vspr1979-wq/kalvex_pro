@@ -1,118 +1,121 @@
-"""Strategy Manager page — table of the small v1 strategy set (layout only)."""
+"""Strategy Manager — enable/edit the SMALL v1 set with live stats."""
 
-from PySide6.QtCore import Qt
+from __future__ import annotations
+
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
-    QPushButton,
-    QTableWidget,
+    QLineEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from kalvex.core.constants import STRATEGY_NAMES
-from kalvex.ui.widgets import hint_label, make_table, page_header, section_title
+from kalvex.core.strategies import TUNE_BANDS
+from kalvex.ui.widgets import (
+    hint_label,
+    legend,
+    make_table,
+    page_header,
+    section_title,
+)
 
 
 class StrategiesPage(QWidget):
-    """Strategy table: name, on/off, mode, positions, today PnL, start/stop/edit."""
+    strategy_toggled = Signal(str, bool)
+    param_changed = Signal(str, str, object)   # key, param, value
 
-    HEADERS = ["Strategy", "On/Off", "Mode", "Open Positions", "Today P&L", "Actions"]
+    HEADERS = ["Strategy", "On/Off", "Mode", "Parameters (within hard bands)",
+               "Trades", "Win %", "Today P&L", "Status"]
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(20, 16, 20, 12)
+        root.setSpacing(10)
 
-        root.addWidget(
-            page_header(
-                "Strategy Manager",
-                "Enable and configure a SMALL set of strategies. Rows below are the planned v1 set — "
-                "no logic runs in this layout build.",
-            )
-        )
+        root.addWidget(page_header(
+            "Strategy Manager",
+            "Four v1 strategies only. Parameters are editable within hard "
+            "tune bands; the self-improvement loop can only move them inside "
+            "those same bands."))
 
-        # --- toolbar ---
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
-
-        add_btn = QPushButton("Add strategy (later)")
-        add_btn.setObjectName("secondary")
-        add_btn.setEnabled(False)
-        toolbar.addWidget(add_btn)
-
-        filter_mode = QComboBox()
-        filter_mode.addItems(["All modes", "Paper", "Semi-auto", "Auto"])
-        filter_mode.setCurrentIndex(0)
-        filter_mode.setMinimumWidth(140)
-        toolbar.addWidget(filter_mode)
-
-        toolbar.addStretch(1)
-        toolbar.addWidget(hint_label("Auto entries stay disabled until Paper mode has been used."))
-        root.addLayout(toolbar)
-
-        # --- strategy table ---
-        self.table: QTableWidget = make_table(list(self.HEADERS), stretch_cols=(0,))
-        self._fill_sample_rows()
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(1, header.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, header.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, header.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, header.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, header.ResizeMode.Fixed)
-        self.table.setColumnWidth(5, 250)
+        self.table = make_table(list(self.HEADERS), stretch_cols=(0, 3))
         root.addWidget(self.table, stretch=1)
 
-        root.addWidget(section_title("LATER / OVERLAY-ONLY (NOT LIVE AUTO-ENTRY IN V1)"))
-        root.addWidget(
-            hint_label(
-                "Nice-to-have: Bollinger squeeze, MACD momentum. "
-                "SMC (FVG/OB/BOS/CHoCH) via smartmoneyconcepts is a chart overlay + optional alert only — "
-                "never the sole live strategy."
-            )
-        )
+        root.addWidget(section_title("LATER / OVERLAY-ONLY — NOT LIVE AUTO-ENTRY"))
+        root.addWidget(hint_label(
+            "Nice-to-have: Bollinger squeeze, MACD momentum. SMC "
+            "(FVG/OB/BOS/CHoCH via smartmoneyconcepts) = chart overlay + "
+            "optional alert only — never the sole live strategy."))
 
-    def _fill_sample_rows(self) -> None:
-        """Static placeholder rows for the planned v1 strategy set."""
-        self.table.setRowCount(len(STRATEGY_NAMES))
-        for r, name in enumerate(STRATEGY_NAMES):
-            self.table.setItem(r, 0, self._item(name))
+    # ------------------------------------------------------------------ #
+    def set_strategies(self, rows: list[dict]) -> None:
+        """rows: key, name, enabled, mode, params(dict), trades, win, pnl, status"""
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.table.setRowCount(len(rows))
+        self._keys = [r["key"] for r in rows]
+        for r, row in enumerate(rows):
+            self.table.setItem(r, 0, QTableWidgetItem(row["name"]))
 
-            on_off = QCheckBox()
-            on_off.setChecked(False)
-            on_off.setStyleSheet("margin-left: 12px;")
-            self.table.setCellWidget(r, 1, on_off)
+            cb = QCheckBox()
+            cb.setChecked(bool(row["enabled"]))
+            cb.setStyleSheet("margin-left: 10px;")
+            cb.toggled.connect(
+                lambda on, k=row["key"]: self.strategy_toggled.emit(k, on))
+            self.table.setCellWidget(r, 1, cb)
 
             mode = QComboBox()
             mode.addItems(["Paper", "Semi-auto", "Auto (locked)"])
-            mode.setCurrentIndex(0)
-            mode.setMinimumWidth(130)
-            mode.setMaximumWidth(150)
+            mode.setCurrentIndex({"Paper": 0, "Semi-auto": 1}.get(row.get("mode", "Paper"), 0))
+            mode.setMaximumWidth(130)
             self.table.setCellWidget(r, 2, mode)
 
-            self.table.setItem(r, 3, self._item("—"))
-            self.table.setItem(r, 4, self._item("—"))
+            self.table.setCellWidget(r, 3, self._param_editor(row["key"], row["params"]))
+            self.table.setItem(r, 4, QTableWidgetItem(str(row.get("trades", 0))))
+            wr = row.get("win")
+            self.table.setItem(r, 5, QTableWidgetItem(
+                "—" if wr is None else f"{wr:.0%}"))
+            pnl = row.get("pnl", 0.0)
+            item = QTableWidgetItem(f"₹ {pnl:,.0f}")
+            item.setForeground(
+                __import__("PySide6.QtGui", fromlist=["QColor"]).QColor(
+                    "#35D0C8" if pnl >= 0 else "#FF5D5D"))
+            self.table.setItem(r, 6, item)
+            self.table.setItem(r, 7, QTableWidgetItem(row.get("status", "idle")))
 
-            actions = QWidget()
-            actions_lay = QHBoxLayout(actions)
-            actions_lay.setContentsMargins(4, 2, 4, 2)
-            actions_lay.setSpacing(6)
-            for label, enabled in (("Start", True), ("Stop", False), ("Edit", True)):
-                btn = QPushButton(label)
-                btn.setObjectName("secondary")
-                btn.setEnabled(enabled)
-                btn.setFixedWidth(72)
-                actions_lay.addWidget(btn)
-            actions_lay.addStretch(1)
-            self.table.setCellWidget(r, 5, actions)
+    def _param_editor(self, key: str, params: dict) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(6)
+        bands = TUNE_BANDS.get(key, {})
+        for name, value in list(params.items())[:3]:
+            edit = QLineEdit(str(value))
+            edit.setMaximumWidth(72)
+            if name in bands:
+                lo, hi = bands[name]
+                edit.setToolTip(f"hard band: {lo} … {hi}")
+            else:
+                edit.setToolTip("fixed parameter")
+            edit.editingFinished.connect(
+                lambda e=edit, k=key, n=name: self._emit_param(k, n, e.text()))
+            lay.addWidget(legend(name))
+            lay.addWidget(edit)
+        lay.addStretch(1)
+        return w
 
-    @staticmethod
-    def _item(text: str):
-        from PySide6.QtWidgets import QTableWidgetItem
-
-        item = QTableWidgetItem(text)
-        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        return item
+    def _emit_param(self, key: str, name: str, text: str) -> None:
+        bands = TUNE_BANDS.get(key, {})
+        try:
+            val: float | int = float(text)
+            if name in bands:
+                lo, hi = bands[name]
+                val = max(lo, min(hi, val))
+            if float(val).is_integer():
+                val = int(val)
+        except ValueError:
+            return
+        self.param_changed.emit(key, name, val)

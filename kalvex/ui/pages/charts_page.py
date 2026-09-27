@@ -1,142 +1,91 @@
-"""Charts page — timeframe controls, chart canvas placeholder, overlays panel."""
+"""Charts page — custom candle canvas, timeframe + overlay toggles, markers."""
 
-from PySide6.QtCore import Qt
+from __future__ import annotations
+
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QFrame,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from kalvex.ui.widgets import hint_label, page_header, placeholder_panel, section_title
+from kalvex.ui.chart import CandleChart
+from kalvex.ui.widgets import hint_label, legend, page_header, section_title
 
 
 class ChartsPage(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(20, 16, 20, 12)
+        root.setSpacing(8)
 
-        root.addWidget(
-            page_header(
-                "Charts",
-                "Candles, timeframe switching, indicator overlays and buy/sell markers. "
-                "Chart canvas embeds lightweight-charts-python in a later phase (fallback: pyqtgraph).",
-            )
-        )
+        root.addWidget(page_header(
+            "Charts",
+            "Candles rendered live from the feed with the bot's overlays and "
+            "entry/exit markers."))
 
-        # --- toolbar ---
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(10)
+        # toolbar
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        bar.addWidget(legend("instrument"))
+        self.symbol = QComboBox()
+        self.symbol.setMinimumWidth(180)
+        bar.addWidget(self.symbol)
 
-        toolbar.addWidget(QLabel("Symbol:"))
-        symbol = QComboBox()
-        symbol.setPlaceholderText("Search symbol…")
-        symbol.addItems(["NIFTY 50", "BANK NIFTY", "FIN NIFTY", "NIFTY (F&O) placeholder…"])
-        symbol.setCurrentIndex(-1)
-        symbol.setMinimumWidth(200)
-        toolbar.addWidget(symbol)
-
-        toolbar.addSpacing(10)
-        toolbar.addWidget(QLabel("Timeframe:"))
+        bar.addSpacing(8)
+        bar.addWidget(legend("timeframe"))
         self.tf_group = QButtonGroup(self)
         self.tf_group.setExclusive(True)
         for i, tf in enumerate(("1m", "5m", "15m")):
-            btn = QPushButton(tf)
-            btn.setObjectName("segButton segButtonLeft" if i == 0 else "segButton")
-            btn.setCheckable(True)
-            self.tf_group.addButton(btn)
-            toolbar.addWidget(btn)
-        self.tf_group.buttons()[1].setChecked(True)  # default 5m
+            b = QPushButton(tf)
+            b.setObjectName("seg segButtonLeft" if i == 0 else "seg")
+            b.setCheckable(True)
+            self.tf_group.addButton(b)
+            bar.addWidget(b)
+        self.tf_group.buttons()[1].setChecked(True)
 
-        toolbar.addStretch(1)
+        bar.addStretch(1)
+        self.feed_chip = legend("feed: SIMULATED", faint=True)
+        bar.addWidget(self.feed_chip)
+        root.addLayout(bar)
 
-        live_btn = QPushButton("Connect feed (placeholder)")
-        live_btn.setObjectName("secondary")
-        live_btn.setEnabled(False)
-        live_btn.setToolTip("No market-data connection in this layout build.")
-        toolbar.addWidget(live_btn)
-        root.addLayout(toolbar)
-
-        # --- chart + side panel ---
         body = QHBoxLayout()
-        body.setSpacing(12)
+        body.setSpacing(10)
 
-        chart_col = QVBoxLayout()
-        chart_col.setSpacing(8)
+        self.chart = CandleChart()
+        body.addWidget(self.chart, stretch=1)
 
-        self.chart_placeholder = QFrame()
-        self.chart_placeholder.setObjectName("placeholder")
-        chart_lay = QVBoxLayout(self.chart_placeholder)
-        chart_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chart_msg = QLabel(
-            "Chart canvas — empty\n\n"
-            "Target: lightweight-charts-python (fallback: pyqtgraph)\n"
-            "Candles • 1m / 5m / 15m • overlays • buy/sell markers"
-        )
-        chart_msg.setObjectName("placeholderText")
-        chart_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chart_lay.addWidget(chart_msg)
-        chart_col.addWidget(self.chart_placeholder, stretch=1)
-
-        # marker legend
-        legend = QHBoxLayout()
-        buy_lbl = QLabel("▲ Buy marker")
-        buy_lbl.setObjectName("pnlPositive")
-        sell_lbl = QLabel("▼ Sell marker")
-        sell_lbl.setObjectName("pnlNegative")
-        legend.addWidget(buy_lbl)
-        legend.addWidget(sell_lbl)
-        legend.addStretch(1)
-        legend.addWidget(hint_label("Markers rendered from logged signals/orders (IST)."))
-        chart_col.addLayout(legend)
-
-        body.addLayout(chart_col, stretch=4)
-
-        # --- right: overlays + watchlist ---
+        # overlays panel
         side = QVBoxLayout()
-        side.setSpacing(10)
-        side.addWidget(section_title("OVERLAYS / INDICATORS"))
-
-        self.overlays: list[QCheckBox] = []
-        for name, checked in (
-            ("EMA (fast/slow)", True),
-            ("VWAP", True),
-            ("Supertrend", False),
-            ("RSI (sub-chart)", False),
-            ("Bollinger Bands (squeeze — nice-to-have)", False),
-            ("MACD (nice-to-have)", False),
-            ("SMC FVG/OB/BOS/CHoCH (research only)", False),
-        ):
-            cb = QCheckBox(name)
-            cb.setChecked(checked)
-            if "SMC" in name:
-                cb.setToolTip("Overlay/research only — never the sole live strategy in v1.")
-            self.overlays.append(cb)
-            side.addWidget(cb)
-
-        side.addSpacing(8)
-        side.addWidget(section_title("WATCHLIST"))
-        watch = placeholder_panel("Watchlist (empty)", min_height=180)
-        side.addWidget(watch)
-        side.addWidget(
-            hint_label(
-                "Options (v1, opt-in): index options buying only, ATM / defined OTM width, "
-                "current expiry first. IV & Greeks only if the feed provides them."
-            )
-        )
+        side.setSpacing(6)
+        side.addWidget(section_title("OVERLAYS"))
+        self.cb_ema = QCheckBox("EMA (fast/slow)")
+        self.cb_ema.setChecked(True)
+        self.cb_vwap = QCheckBox("VWAP (session)")
+        self.cb_vwap.setChecked(True)
+        self.cb_ema.toggled.connect(lambda on: setattr(self.chart, "show_ema", on))
+        self.cb_vwap.toggled.connect(lambda on: setattr(self.chart, "show_vwap", on))
+        side.addWidget(self.cb_ema)
+        side.addWidget(self.cb_vwap)
+        side.addWidget(hint_label(
+            "Later: Bollinger squeeze, MACD, SMC FVG/OB/BOS/CHoCH as "
+            "research overlays + optional alert only — never sole live entry."))
         side.addStretch(1)
-
-        side_w = QWidget()
-        side_w.setLayout(side)
-        side_w.setFixedWidth(320)
-        body.addWidget(side_w)
-
+        right = QWidget()
+        right.setLayout(side)
+        right.setFixedWidth(280)
+        body.addWidget(right)
         root.addLayout(body, stretch=1)
+
+        root.addWidget(hint_label(
+            "▲▼ markers show the bot's executed entries/exits (IST journal). "
+            "Production embed target: lightweight-charts-python (fallback pyqtgraph)."))
+
+    def set_symbols(self, names: list[str]) -> None:
+        self.symbol.clear()
+        self.symbol.addItems(names)

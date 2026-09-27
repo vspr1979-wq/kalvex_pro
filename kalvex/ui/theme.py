@@ -1,285 +1,329 @@
-"""Dark theme stylesheet for Kalvex Pro.
+"""Kalvex Pro — 'Ember Terminal' theme.
 
-Practical dark theme (not a full Fluent clone). Colors are kept in one
-place so a later theme pass only touches this file.
+Design language (deliberately NOT a generic SaaS dashboard):
+  * ink-black cockpit background, hairline-bordered panels
+  * ember/amber instrument backlight accent; cyan = long/profit,
+    coral = short/loss/kill, violet = system/analysis
+  * ALL numerics in a monospace face (tabular by construction)
+  * micro-labels: small, uppercase, muted — like cockpit legends
+  * cards carry a coloured left edge bar instead of rounded blobs
+  * squared corners (2-4px), 1px hairlines, no glossy gradients
 """
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
-# Palette
-BG = "#0e1116"
-SURFACE = "#161b22"
-SURFACE_2 = "#1c232d"
-BORDER = "#2a323d"
-TEXT = "#e6edf3"
-TEXT_MUTED = "#8b98a9"
-ACCENT = "#3d8bfd"
-ACCENT_SOFT = "#1d2f4a"
-GREEN = "#2ea36e"
-RED = "#e5534b"
-RED_DEEP = "#b4232a"
-AMBER = "#d29922"
+# palette
+BG = "#0A0D12"
+PANEL = "#10151C"
+PANEL_2 = "#151B23"
+HAIRLINE = "#222B36"
+EMBERS = "#FFB020"
+EMBER_DIM = "#B87A12"
+CYAN = "#35D0C8"
+CORAL = "#FF5D5D"
+CORAL_DEEP = "#B32424"
+VIOLET = "#8B7CFF"
+TEXT = "#E8EEF6"
+MUTED = "#7A8798"
+FAINT = "#4A5665"
 
-DARK_QSS = f"""
+MONO_STACK = "Consolas, 'Cascadia Mono', 'DejaVu Sans Mono', monospace"
+
+
+def mono_font(size: int = 12, bold: bool = False) -> QFont:
+    fams = QFontDatabase.families()
+    for name in ("Consolas", "Cascadia Mono", "DejaVu Sans Mono",
+                 "Liberation Mono", "Menlo", "monospace"):
+        if name in fams:
+            f = QFont(name, size)
+            break
+    else:
+        f = QFont("monospace", size)
+    f.setBold(bold)
+    f.setStyleHint(QFont.StyleHint.Monospace)
+    return f
+
+
+def label_font(size: int = 9, bold: bool = True) -> QFont:
+    f = QFont("Segoe UI", size)
+    f.setBold(bold)
+    f.setCapitalization(QFont.Capitalization.AllUppercase)
+    return f
+
+
+EMBER_QSS = f"""
 /* ---------- base ---------- */
 QWidget {{
     background-color: {BG};
     color: {TEXT};
-    font-size: 13px;
-}}
-QToolTip {{
-    background-color: {SURFACE_2};
-    color: {TEXT};
-    border: 1px solid {BORDER};
-    padding: 4px 8px;
-}}
-
-/* ---------- top bar ---------- */
-QFrame#topBar {{
-    background-color: {SURFACE};
-    border-bottom: 1px solid {BORDER};
-}}
-QLabel#appTitle {{
-    font-size: 16px;
-    font-weight: 700;
-    color: {TEXT};
-}}
-QLabel#pill {{
-    background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    border-radius: 10px;
-    padding: 4px 12px;
-    color: {TEXT_MUTED};
     font-size: 12px;
 }}
-QLabel#pillGreen {{ color: {GREEN}; border-color: {GREEN}; }}
-QLabel#pillRed   {{ color: {RED};  border-color: {RED}; }}
-QLabel#pillAmber {{ color: {AMBER}; border-color: {AMBER}; }}
-
-QLabel#metricTitle {{
-    color: {TEXT_MUTED};
+QToolTip {{
+    background-color: {PANEL_2};
+    color: {TEXT};
+    border: 1px solid {EMBERS};
+    padding: 4px 8px;
     font-size: 11px;
 }}
-QLabel#metricValue {{
-    font-size: 15px;
+QLabel#legend {{          /* cockpit micro-label */
+    color: {MUTED};
+    font-size: 9px;
     font-weight: 700;
 }}
-
-QPushButton#segButton {{
-    background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    padding: 6px 14px;
-    color: {TEXT_MUTED};
+QLabel#legendFaint {{ color: {FAINT}; font-size: 9px; font-weight: 700; }}
+QLabel#num {{             /* monospace numerics */
+    color: {TEXT};
+    font-size: 15px;
 }}
-QPushButton#segButton:checked {{
-    background-color: {ACCENT_SOFT};
-    border: 1px solid {ACCENT};
+QLabel#numBig {{
+    color: {TEXT};
+    font-size: 26px;
+}}
+QLabel#numPos {{ color: {CYAN}; font-size: 15px; }}
+QLabel#numNeg {{ color: {CORAL}; font-size: 15px; }}
+QLabel#title {{
+    font-size: 17px;
+    font-weight: 700;
     color: {TEXT};
 }}
-QPushButton#segButton:disabled {{
-    color: #55606e;
-    background-color: {SURFACE};
-}}
-QPushButton#segButtonLeft  {{ border-top-left-radius: 6px; border-bottom-left-radius: 6px; }}
-QPushButton#segButtonRight {{ border-top-right-radius: 6px; border-bottom-right-radius: 6px; }}
-
-QPushButton#killSwitch {{
-    background-color: {RED_DEEP};
-    color: #ffffff;
-    border: none;
-    border-radius: 6px;
-    padding: 10px 18px;
+QLabel#subtitle {{ color: {MUTED}; font-size: 11px; }}
+QLabel#hint {{ color: {MUTED}; font-size: 10px; }}
+QLabel#section {{
+    color: {EMBERS};
+    font-size: 10px;
     font-weight: 700;
-    font-size: 13px;
 }}
-QPushButton#killSwitch:hover   {{ background-color: {RED}; }}
-QPushButton#killSwitch:pressed {{ background-color: #8f1c22; }}
+QLabel#empty {{ color: {FAINT}; font-size: 12px; padding: 18px; }}
 
-/* ---------- left nav ---------- */
-QFrame#navPanel {{
-    background-color: {SURFACE};
-    border-right: 1px solid {BORDER};
+/* ---------- command strip (top bar) ---------- */
+QFrame#topBar {{
+    background-color: {PANEL};
+    border-bottom: 1px solid {HAIRLINE};
 }}
-QPushButton#navButton {{
+QLabel#brand {{
+    color: {EMBERS};
+    font-size: 18px;
+    font-weight: 800;
+}}
+QLabel#brandSub {{
+    color: {FAINT};
+    font-size: 8px;
+    font-weight: 700;
+}}
+QFrame#chip {{
+    background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    border-left: 3px solid {EMBERS};
+    border-radius: 2px;
+}}
+QFrame#chipGreen {{ border-left: 3px solid {CYAN}; }}
+QFrame#chipRed {{ border-left: 3px solid {CORAL}; }}
+QFrame#chipViolet {{ border-left: 3px solid {VIOLET}; }}
+
+QPushButton#seg {{
+    background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    color: {MUTED};
+    padding: 6px 13px;
+    font-size: 11px;
+}}
+QPushButton#seg:checked {{
+    background-color: #24190A;
+    border: 1px solid {EMBERS};
+    color: {EMBERS};
+    font-weight: 700;
+}}
+QPushButton#seg:disabled {{ color: {FAINT}; background-color: {PANEL}; }}
+QPushButton#segLeft  {{ border-top-left-radius: 3px; border-bottom-left-radius: 3px; }}
+QPushButton#segRight {{ border-top-right-radius: 3px; border-bottom-right-radius: 3px; }}
+
+QPushButton#kill {{
+    background-color: {CORAL_DEEP};
+    color: #FFFFFF;
+    border: 1px solid {CORAL};
+    border-radius: 3px;
+    padding: 9px 18px;
+    font-weight: 800;
+    font-size: 12px;
+}}
+QPushButton#kill:hover {{ background-color: {CORAL}; color: #14060a; }}
+QPushButton#kill:pressed {{ background-color: #7E1A1A; }}
+
+QPushButton#ember {{
+    background-color: {EMBERS};
+    color: #14100A;
+    border: none;
+    border-radius: 3px;
+    padding: 7px 15px;
+    font-weight: 700;
+    font-size: 11px;
+}}
+QPushButton#ember:hover {{ background-color: #FFC44D; }}
+QPushButton#ember:disabled {{ background-color: {PANEL_2}; color: {FAINT}; }}
+
+QPushButton#ghost {{
+    background-color: transparent;
+    border: 1px solid {HAIRLINE};
+    border-radius: 3px;
+    padding: 7px 15px;
+    color: {TEXT};
+    font-size: 11px;
+}}
+QPushButton#ghost:hover {{ border-color: {EMBERS}; color: {EMBERS}; }}
+QPushButton#ghost:disabled {{ color: {FAINT}; border-color: {PANEL_2}; }}
+
+/* ---------- left rail ---------- */
+QFrame#navPanel {{
+    background-color: {PANEL};
+    border-right: 1px solid {HAIRLINE};
+}}
+QPushButton#nav {{
     background-color: transparent;
     border: none;
-    border-radius: 6px;
-    padding: 10px 14px;
+    border-left: 2px solid transparent;
+    padding: 9px 12px;
     text-align: left;
-    color: {TEXT_MUTED};
-    font-size: 13px;
+    color: {MUTED};
+    font-size: 12px;
 }}
-QPushButton#navButton:hover    {{ background-color: {SURFACE_2}; color: {TEXT}; }}
-QPushButton#navButton:checked  {{
-    background-color: {ACCENT_SOFT};
-    color: {TEXT};
-    border-left: 3px solid {ACCENT};
-    font-weight: 600;
+QPushButton#nav:hover {{ background-color: {PANEL_2}; color: {TEXT}; }}
+QPushButton#nav:checked {{
+    background-color: #1A1408;
+    border-left: 2px solid {EMBERS};
+    color: {EMBERS};
+    font-weight: 700;
 }}
-QLabel#navSectionLabel {{
-    color: #5c6875;
-    font-size: 10px;
-    letter-spacing: 1px;
-    padding: 6px 14px;
+QLabel#navLegend {{
+    color: {FAINT};
+    font-size: 8px;
+    font-weight: 700;
+    padding: 10px 12px 2px 12px;
 }}
 
-/* ---------- pages ---------- */
-QLabel#pageTitle    {{ font-size: 18px; font-weight: 700; }}
-QLabel#pageSubtitle {{ color: {TEXT_MUTED}; font-size: 12px; }}
-QLabel#sectionTitle {{ font-size: 13px; font-weight: 700; color: {ACCENT}; }}
-QLabel#emptyState {{
-    color: #5c6875;
-    font-size: 13px;
-    padding: 24px;
-}}
-QLabel#hint {{ color: {TEXT_MUTED}; font-size: 11px; }}
-QLabel#pnlPositive {{ color: {GREEN}; font-weight: 700; }}
-QLabel#pnlNegative {{ color: {RED}; font-weight: 700; }}
-
+/* ---------- panels / cards ---------- */
 QFrame#card {{
-    background-color: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 8px;
+    background-color: {PANEL};
+    border: 1px solid {HAIRLINE};
+    border-left: 3px solid {EMBERS};
+    border-radius: 2px;
 }}
-QFrame#placeholder {{
-    background-color: {SURFACE};
-    border: 1px dashed {BORDER};
-    border-radius: 8px;
+QFrame#cardCyan {{ border-left: 3px solid {CYAN}; }}
+QFrame#cardCoral {{ border-left: 3px solid {CORAL}; }}
+QFrame#cardViolet {{ border-left: 3px solid {VIOLET}; }}
+QFrame#well {{
+    background-color: {PANEL};
+    border: 1px solid {HAIRLINE};
+    border-radius: 2px;
 }}
-QLabel#placeholderText {{ color: #5c6875; font-size: 13px; }}
+QFrame#dashed {{
+    background-color: {PANEL};
+    border: 1px dashed {HAIRLINE};
+    border-radius: 2px;
+}}
 
 /* ---------- tables ---------- */
 QTableWidget, QTableView {{
-    background-color: {SURFACE};
-    alternate-background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    gridline-color: {BORDER};
-    selection-background-color: {ACCENT_SOFT};
-    selection-color: {TEXT};
+    background-color: {PANEL};
+    alternate-background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    gridline-color: {HAIRLINE};
+    selection-background-color: #24190A;
+    selection-color: {EMBERS};
 }}
 QHeaderView::section {{
-    background-color: {SURFACE_2};
-    color: {TEXT_MUTED};
+    background-color: {PANEL_2};
+    color: {MUTED};
     border: none;
-    border-bottom: 1px solid {BORDER};
-    padding: 7px 10px;
-    font-size: 11px;
-    font-weight: 600;
+    border-bottom: 1px solid {HAIRLINE};
+    padding: 6px 8px;
+    font-size: 9px;
+    font-weight: 700;
 }}
-QTableWidget::item {{ padding: 4px 8px; }}
+QTableWidget::item {{ padding: 3px 6px; }}
 
 /* ---------- tabs ---------- */
 QTabWidget::pane {{
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    top: -1px;
+    border: 1px solid {HAIRLINE};
     background-color: {BG};
 }}
 QTabBar::tab {{
-    background-color: {SURFACE};
-    color: {TEXT_MUTED};
-    border: 1px solid {BORDER};
+    background-color: {PANEL};
+    color: {MUTED};
+    border: 1px solid {HAIRLINE};
     border-bottom: none;
-    padding: 8px 18px;
-    margin-right: 2px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
+    padding: 7px 16px;
+    margin-right: 1px;
+    font-size: 11px;
 }}
 QTabBar::tab:selected {{
-    background-color: {ACCENT_SOFT};
-    color: {TEXT};
-    border-color: {ACCENT};
+    background-color: #1A1408;
+    color: {EMBERS};
+    border-color: {EMBER_DIM};
+    font-weight: 700;
 }}
 
 /* ---------- inputs ---------- */
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit, QTextEdit {{
-    background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    border-radius: 5px;
-    padding: 6px 8px;
-    selection-background-color: {ACCENT_SOFT};
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit, QTextEdit, QPlainTextEdit {{
+    background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    border-radius: 2px;
+    padding: 5px 7px;
+    selection-background-color: #24190A;
+    selection-color: {EMBERS};
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 1px solid {ACCENT};
+    border: 1px solid {EMBERS};
 }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
-    color: #55606e;
+    color: {FAINT};
 }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox::drop-down {{ border: none; width: 20px; }}
 QComboBox QAbstractItemView {{
-    background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    selection-background-color: {ACCENT_SOFT};
+    background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    selection-background-color: #24190A;
+    selection-color: {EMBERS};
 }}
-QCheckBox {{ spacing: 8px; }}
+QCheckBox {{ spacing: 7px; }}
 QCheckBox::indicator {{
-    width: 16px; height: 16px;
-    border: 1px solid {BORDER};
-    border-radius: 4px;
-    background-color: {SURFACE_2};
+    width: 14px; height: 14px;
+    border: 1px solid {HAIRLINE};
+    border-radius: 2px;
+    background-color: {PANEL_2};
 }}
-QCheckBox::indicator:checked {{ background-color: {ACCENT}; border-color: {ACCENT}; }}
-QCheckBox:disabled {{ color: #55606e; }}
+QCheckBox::indicator:checked {{ background-color: {EMBERS}; border-color: {EMBERS}; }}
+QCheckBox:disabled {{ color: {FAINT}; }}
 
-QPushButton#secondary {{
-    background-color: {SURFACE_2};
-    border: 1px solid {BORDER};
-    border-radius: 5px;
-    padding: 7px 14px;
-    color: {TEXT};
-}}
-QPushButton#secondary:hover   {{ border-color: {ACCENT}; }}
-QPushButton#secondary:disabled {{ color: #55606e; }}
-QPushButton#primary {{
-    background-color: {ACCENT};
-    border: none;
-    border-radius: 5px;
-    padding: 7px 14px;
-    color: #ffffff;
-    font-weight: 600;
-}}
-QPushButton#primary:hover {{ background-color: #5a9bff; }}
-QPushButton#primary:disabled {{ background-color: {SURFACE_2}; color: #55606e; }}
-
-/* ---------- misc ---------- */
+/* ---------- scroll / status ---------- */
 QScrollArea {{ border: none; }}
 QStatusBar {{
-    background-color: {SURFACE};
-    border-top: 1px solid {BORDER};
-    color: {TEXT_MUTED};
-    font-size: 11px;
+    background-color: {PANEL};
+    border-top: 1px solid {HAIRLINE};
+    color: {MUTED};
+    font-size: 10px;
 }}
-QScrollBar:vertical {{
-    background: {BG};
-    width: 10px;
-    margin: 0;
-}}
-QScrollBar::handle:vertical {{
-    background: {BORDER};
-    border-radius: 4px;
-    min-height: 30px;
-}}
+QScrollBar:vertical {{ background: {BG}; width: 9px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {HAIRLINE}; border-radius: 3px; min-height: 28px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{
-    background: {BG};
-    height: 10px;
-    margin: 0;
-}}
-QScrollBar::handle:horizontal {{
-    background: {BORDER};
-    border-radius: 4px;
-    min-width: 30px;
-}}
+QScrollBar:horizontal {{ background: {BG}; height: 9px; margin: 0; }}
+QScrollBar::handle:horizontal {{ background: {HAIRLINE}; border-radius: 3px; min-width: 28px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-QSplitter::handle {{ background: {BORDER}; }}
+QSplitter::handle {{ background: {HAIRLINE}; }}
+QProgressBar {{
+    background-color: {PANEL_2};
+    border: 1px solid {HAIRLINE};
+    border-radius: 2px;
+    text-align: center;
+    color: {TEXT};
+    font-size: 10px;
+}}
+QProgressBar::chunk {{ background-color: {EMBERS}; }}
 """
 
 
 def apply_theme(app: QApplication) -> None:
-    """Apply the dark theme and base font to the application."""
     app.setStyle("Fusion")
-    font = QFont("Segoe UI", 10)  # Segoe UI on Windows 11; falls back elsewhere
-    app.setFont(font)
-    app.setStyleSheet(DARK_QSS)
+    base = QFont("Segoe UI", 10)
+    app.setFont(base)
+    app.setStyleSheet(EMBER_QSS)

@@ -1,71 +1,168 @@
-# Kalvex Pro — UI Layout Skeleton
+# Kalvex Pro — Ember Terminal
 
-Windows 11 desktop trading workstation for **one adult retail trader**, **Upstox only**.
+Windows 11 desktop algo-trading workstation for **one adult retail trader**,
+**Upstox only**. Paper trading is the DEFAULT; live auto-trading is a later
+opt-in behind hard risk limits.
 
-> **This repository currently contains an EMPTY UI LAYOUT only.**
-> No broker connectivity, no order placement, no market data, no strategy logic.
-> This is a specification/UI artifact — **not live trading advice**.
-> **Paper trading is the default mode**; live auto-trading is a later opt-in phase.
+> **This is a specification/tooling artifact — not live trading advice.**
+> The engine runs end-to-end in **Paper mode** on a simulated feed.
+> The live adapter implements only **verified** Upstox request shapes and
+> refuses everything marked UNKNOWN.
 
 ## Run (Windows 11, Python 3.11+)
 
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python main.py
+.venv\Scripts\python main.py              # GUI — press START BOT (Paper)
+.venv\Scripts\python main.py --selftest   # headless engine self-test
 ```
 
-Designed for a minimum resolution of **1366x768** (window min 1280x720, default 1500x860).
+Designed for minimum 1366x768. Simulated feed clock is accelerated
+(see Settings → UI → sim feed speed) so the decision loop is visible.
 
-## Layout map
+## What the bot does (fully automated, transparent)
 
 ```
-main.py                      entry point
-kalvex/
-  core/constants.py          app constants, bot modes, page ids, v1 strategy names
-  app.py                     QApplication + dark theme
-  ui/
-    theme.py                 dark QSS (single source of colors)
-    main_window.py           window shell + system tray + IST status clock
-    top_bar.py               connection • funds • live P&L • bot state • mode • KILL SWITCH
-    nav_sidebar.py           Dashboard | Charts | Strategies | Positions/Orders | Logs | Settings
-    widgets.py               page header, metric card, placeholder panel, form rows, tables
-    pages/
-      dashboard_page.py      KPI cards, recent signals, session, guard rails
-      charts_page.py         symbol/timeframe bar, chart placeholder, overlays, markers legend
-      strategies_page.py     strategy table (on/off, mode, positions, P&L, start/stop/edit)
-      activity_page.py       Positions | Orders | Trades tables (IST timestamps)
-      logs_page.py           level/source filters + event table (no secrets in logs)
-      settings_page.py       Broker | Risk | Strategies | Indicators | Session hours | UI
+tick → ANALYSE → DECIDE → SIZE → EXECUTE → MANAGE → REVIEW
+        │          │        │        │          │        │
+        │          │        │        │          │        └─ bounded self-tuning
+        │          │        │        │          └─ SL/target/trailing/theta time
+        │          │        │        └─ paper fill / semi confirm / live adapter
+        │          │        └─ capital×risk%/(entry−SL), lots, margin, ceilings
+        │          └─ 4 rule-based strategies, each with a reasoning chain
+        └─ EMA/VWAP/Supertrend/RSI structure (narrated per closed bar)
 ```
 
-## What is intentionally empty / placeholder
+Every step is written to the `decision_log` table with human-readable
+reasoning ("thoughts") and streamed live into the UI **Decision Stream** and
+**Bot Brain** pages. There is no black-box ML: signals are rule-based,
+self-improvement only moves soft parameters inside hard-coded bands
+(`TUNE_BANDS`), never risk ceilings, and a strategy with 5+ consecutive
+losses is auto-disabled pending manual re-arm.
 
-- All data cells are `—`; tables are empty except clearly static sample rows (v1 strategy names).
-- Chart canvas is a dashed placeholder for `lightweight-charts-python` (fallback `pyqtgraph`).
-- Broker fields (OAuth, algo tags, static IP) are placeholders — **nothing is sent anywhere**.
-- Bot mode selector: **Paper** default; **Semi-auto** selectable; **Auto is disabled/locked**
-  until Paper mode has been used (and the later live opt-in phase).
-- Kill switch and tray menu show confirmation dialogs only — they cancel nothing yet.
+### v1 strategy set (exactly four)
+| Key | Strategy | Notes |
+|---|---|---|
+| `orb` | Opening Range Breakout | index / liquid F&O; one-shot per direction per day |
+| `ema_vwap` | EMA crossover + VWAP filter | SL = ATR multiple; RR target |
+| `supertrend` | Supertrend trend-follow | flip entries, ATR anchor |
+| `rsi_mr` | RSI mean-reversion | cash/futures only in v1 |
 
-## Must be re-verified against CURRENT Upstox docs before coding (unknowns marked UNKNOWN)
+Nice-to-have later (overlay/alert only, never sole live entry): Bollinger
+squeeze, MACD momentum, SMC FVG/OB/BOS/CHoCH (smartmoneyconcepts).
 
-- [ ] OAuth 2.0 flow: API key/secret/redirect URI, access + refresh token, scopes
-- [ ] Token storage: Windows DPAPI (never plaintext) + refresh-on-expiry behaviour
-- [ ] Whether a **static IP must be registered** for the order API (and for which segments)
-- [ ] **algo_id / algo_name / strategy tag** requirements on orders (form, field names, registration)
-- [ ] Current **order-rate limits** (e.g. 10 orders/sec baseline) and registered-algo product exceptions
-- [ ] Order types actually allowed for algo/API: Limit, SL-L, GTT availability, raw MARKET — UNKNOWN until confirmed
-- [ ] Whether **MCX/commodities** orders are accepted at all (out of scope for v1 otherwise)
-- [ ] Websocket feed: authorize payload, protobuf schema, LTP/quote/depth, IV & Greeks availability
-- [ ] Positions/orders/trades endpoints for state recovery after restart
-- [ ] Sandbox / safe-testing facilities offered by Upstox (toggle behaviour)
-- [ ] Index options order constraints: lot sizes, strike/exercise rules, freeze quantity limits
+### Options (v1, opt-in)
+Index options **buying only**; strike picker ATM / ATM±N OTM, current expiry
+first; qty from risk sizing rounded to exchange lot size; forced max holding
+time (theta-aware time exit); IV & Greeks displayed only when the feed
+provides them (`option_greeks` mode) — **no invented pricing models**.
 
-## Planned architecture (next phases — not in this build)
+### Risk (hard ceilings in `kalvex/core/risk.py` — UI cannot raise them)
+per-trade ≤ 2% capital (user default 1%) · ≤ 6 open positions · ≤ 10 lots ·
+orders ≤ 10/sec (Upstox verified) and ≤ user per-min cap · daily max loss →
+flatten + stop · optional profit stop · trailing SL only after min profit ·
+square-off 15:15 IST · **kill switch = cancel + flatten + stop**.
 
-- UI thread (Qt) vs bot worker (QThread) vs websocket thread (QThread), signals/slots only.
-- `PaperEngine` and `LiveBrokerAdapter` share one interface so strategies are mode-agnostic.
-- SQLite tables: `settings`, `strategies`, `signals`, `orders`, `trades`, `positions`, `logs`, `bot_state`.
-- Restart recovery from DB + broker positions — never duplicate orders.
-- Risk: hard-coded ceilings + user settings; daily max loss → flatten + stop; kill switch = cancel + flatten + stop.
+## Architecture
+
+```
+UI thread (PySide6)                      Bot thread (QThread)
+┌──────────────────────────┐   signals   ┌────────────────────────────┐
+│ TopBar · Nav · Pages     │◄───────────►│ BotWorker._cycle()         │
+│  Dashboard (stream)      │             │  strategies → risk → broker│
+│  Charts (QPainter candles│             │  manage → review loop      │
+│  Bot Brain (pipeline)    │             └──────────┬─────────────────┘
+│  Strategies/Activity/    │                        │ lock-guarded
+│  Logs/Settings · Tray    │             ┌──────────▼─────────────────┐
+└──────────┬───────────────┘             │ BrokerInterface            │
+           │                             │  PaperEngine  (complete)   │
+           │                             │  LiveBrokerAdapter (v2/v3) │
+           │                             └──────────┬─────────────────┘
+┌──────────▼───────────────────────────────────────▼─────────────────┐
+│ FeedProvider: SimFeedProvider (deterministic) │ UpstoxFeedProvider  │
+│ Database (SQLite/WAL): settings strategies signals orders trades    │
+│ positions logs bot_state decision_log reviews                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+* **PaperEngine and LiveBrokerAdapter share one interface** so strategies
+  are mode-agnostic; Paper is complete and self-tested, Live only sends
+  verified shapes.
+* **Disconnects**: paper engine never disconnects; live websocket loop must
+  reconnect with backoff (worker thread) and re-sync via positions/orders
+  endpoints.
+* **Token expiry**: Upstox access tokens expire **03:30 IST daily and there
+  is no refresh token** (verified) — the app re-auths via the OAuth dialog
+  and refuses to trade without a valid token.
+* **Partial fills**: PaperEngine tracks `PARTIAL` status and avg fill price;
+  position bookkeeping uses signed quantities.
+* **Restart recovery**: state rebuilds from SQLite (`bot_state`, `positions`,
+  open `orders`); orders carry a client tag (`KLV-…`) used as a dedupe key —
+  a recovered order is re-adopted, never re-placed.
+
+## SQLite schema (see `kalvex/core/db.py` for DDL)
+
+`settings` · `strategies` · `signals` · `decision_log` · `orders` · `trades` ·
+`positions` · `logs` · `bot_state` · `reviews` — all timestamps IST.
+
+## Security plan
+
+* Tokens encrypted with **Windows DPAPI** (`CryptProtectData`, per-user) —
+  never plaintext on disk (`kalvex/core/security.py`).
+* Secrets/tokens are **redacted** before any log write; logs never contain
+  `client_secret`, `access_token`, or `Authorization` values.
+* API secret lives only in the DPAPI store; the Settings field is a masked
+  input.
+* Kill switch, daily loss circuit and hard ceilings are engine-side, not
+  UI-side.
+
+## Upstox verification status (docs checked Sept 2026)
+
+VERIFIED — implemented as documented:
+- [x] OAuth 2.0 authorization-code flow:
+      `GET /v2/login/authorization/dialog` → `POST /v2/login/authorization/token`
+      (code, client_id, client_secret, redirect_uri, grant_type=authorization_code)
+- [x] **No refresh token** — access token expires 03:30 IST daily (plan daily re-auth;
+      v3 `POST /v3/login/auth/token/request/{client_id}` exists for near-unattended flows)
+- [x] Order rate limits: **10/sec, 500/min, 2000/30-min** for order APIs
+      (50/sec only for SEBI-registered algos; registration required >10/sec)
+- [x] **X-Algo-Name header** required on order placement (Algo ID stays in My Apps)
+- [x] **Static IP registration** required for Place/Modify/Cancel/GTT/Exit-All
+- [x] `PlaceOrderV3Request` fields (official SDK): quantity, product, validity,
+      price, tag, instrument_token, order_type, transaction_type,
+      disclosed_quantity, trigger_price, is_amo, slice + `algo_name` kwarg
+- [x] Market data websocket: `WebsocketApi.get_market_data_feed_authorize('2.0')`
+      → connect `authorized_redirect_uri` → JSON sub
+      `{"guid":…, "method":"sub", "data":{"mode":"ltpc|quote|full|option_greeks",
+      "instrumentKeys":[…]}}` → protobuf `FeedResponse` frames
+
+UNKNOWN — do not code against until confirmed:
+- [ ] Whether raw **MARKET** orders are permitted for algo/API accounts
+      (the live adapter refuses MARKET; it sends LIMIT / SL / SL-M only)
+- [ ] Product-code enum for your segments ("D"/"I" seen in SDK material)
+- [ ] **GTT order request schema**
+- [ ] MCX/commodities order support via API (out of scope for v1 regardless)
+- [ ] Exact **MarketDataFeed .proto** version — download from Upstox docs and
+      compile to `MarketDataFeed_pb2` (decoder raises until present)
+- [ ] Exchange **lot sizes / strike steps** (placeholder config — verify
+      against the current contract master before live)
+- [ ] Live **margin percentages** (paper uses a configurable margin factor)
+- [ ] WebSocket reconnect/heartbeat semantics and subscription quotas
+
+## UI — "Ember Terminal"
+
+Dark cockpit aesthetic (ink + ember accent, monospace numerals, hairline
+panels). Top command strip: feed/funds/P&L chips, bot state, mode selector
+(Paper default · Semi-auto · Auto locked until Paper used), START/STOP and
+**KILL SWITCH**. Left rail: Dashboard · Charts · Bot Brain · Strategies ·
+Positions/Orders · Logs · Settings. Tray: show/hide, start/stop, flatten all,
+kill switch. All times IST.
+
+## Tests
+
+`python main.py --selftest` drives the full loop on synthetic data and
+checks: journal completeness, signal generation, sizing math vs
+capital×risk%/(entry−SL), 10/sec throttle, daily-loss flatten, kill switch,
+restart dedupe, and bounded self-improvement (tune values stay inside
+`TUNE_BANDS`; 5-loss auto-disable).

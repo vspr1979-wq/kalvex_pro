@@ -1,41 +1,56 @@
-"""Shared lightweight widgets/helpers used across pages (layout only)."""
+"""Shared widgets for the Ember Terminal UI."""
+
+from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from kalvex.ui.theme import mono_font, label_font
+
+
+def legend(text: str, faint: bool = False) -> QLabel:
+    lbl = QLabel(text.upper())
+    lbl.setObjectName("legendFaint" if faint else "legend")
+    lbl.setFont(label_font(9))
+    return lbl
+
+
+def num_label(text: str = "—", size: int = 15, bold: bool = True,
+              color: str | None = None) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("num")
+    lbl.setFont(mono_font(size, bold))
+    if color:
+        lbl.setStyleSheet(f"color: {color};")
+    return lbl
+
 
 def page_header(title: str, subtitle: str = "") -> QWidget:
-    """Standard page title + muted subtitle block."""
     w = QWidget()
     lay = QVBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 4)
+    lay.setContentsMargins(0, 0, 0, 6)
     lay.setSpacing(2)
     t = QLabel(title)
-    t.setObjectName("pageTitle")
+    t.setObjectName("title")
     lay.addWidget(t)
     if subtitle:
         s = QLabel(subtitle)
-        s.setObjectName("pageSubtitle")
+        s.setObjectName("subtitle")
         s.setWordWrap(True)
         lay.addWidget(s)
     return w
 
 
 def empty_state(text: str) -> QLabel:
-    """Centered muted placeholder for empty tables/panels."""
     lbl = QLabel(text)
-    lbl.setObjectName("emptyState")
+    lbl.setObjectName("empty")
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setWordWrap(True)
     return lbl
@@ -49,69 +64,71 @@ def hint_label(text: str) -> QLabel:
 
 
 def section_title(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setObjectName("sectionTitle")
+    lbl = QLabel(text.upper())
+    lbl.setObjectName("section")
+    lbl.setFont(label_font(10))
     return lbl
 
 
-def metric_card(title: str, value: str = "—", value_color: str | None = None) -> QFrame:
-    """Small KPI card: muted title on top, big value below."""
+def stat_card(leg: str, value: str = "—", accent: str = "",
+              value_size: int = 17) -> QFrame:
+    """Cockpit instrument: micro-legend on top, big mono value below."""
     card = QFrame()
-    card.setObjectName("card")
+    card.setObjectName("card" + accent)
     lay = QVBoxLayout(card)
-    lay.setContentsMargins(14, 12, 14, 12)
-    lay.setSpacing(4)
-
-    t = QLabel(title)
-    t.setObjectName("metricTitle")
-    lay.addWidget(t)
-
-    v = QLabel(value)
-    v.setObjectName("metricValue")
-    if value_color:
-        v.setStyleSheet(f"color: {value_color};")
+    lay.setContentsMargins(12, 8, 12, 10)
+    lay.setSpacing(2)
+    lay.addWidget(legend(leg))
+    v = num_label(value, size=value_size)
     lay.addWidget(v)
-
+    card.value_label = v  # type: ignore[attr-defined]
     card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return card
 
 
-def placeholder_panel(text: str, min_height: int = 200) -> QFrame:
-    """Dashed-border panel used for not-yet-built regions (e.g. chart canvas)."""
-    frame = QFrame()
-    frame.setObjectName("placeholder")
-    frame.setMinimumHeight(min_height)
-    lay = QVBoxLayout(frame)
-    lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
+def chip(text: str, accent: str = "") -> QFrame:
+    """Small status chip with a coloured left edge."""
+    f = QFrame()
+    f.setObjectName("chip" + accent)
+    lay = QHBoxLayout(f)
+    lay.setContentsMargins(8, 4, 8, 4)
+    lay.setSpacing(6)
     lbl = QLabel(text)
-    lbl.setObjectName("placeholderText")
-    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    lbl.setWordWrap(True)
+    lbl.setObjectName("legend")
+    lbl.setFont(label_font(9))
     lay.addWidget(lbl)
-    return frame
+    return f
+
+
+def panel_card(title: str, accent: str = "", body: QWidget | None = None) -> QFrame:
+    card = QFrame()
+    card.setObjectName("card" + accent)
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(12, 10, 12, 12)
+    lay.setSpacing(6)
+    if title:
+        lay.addWidget(section_title(title))
+    if body is not None:
+        lay.addWidget(body)
+    return card
 
 
 def form_row(label: str, widget: QWidget, hint: str = "") -> QWidget:
-    """Label | widget | optional hint row used on Settings tabs."""
     row = QWidget()
     lay = QHBoxLayout(row)
-    lay.setContentsMargins(0, 4, 0, 4)
+    lay.setContentsMargins(0, 3, 0, 3)
     lay.setSpacing(12)
-
     lbl = QLabel(label)
     lbl.setMinimumWidth(210)
     lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     lay.addWidget(lbl)
 
-    # Only clamp editable inputs; checkboxes/labels may use their natural width.
-    from PySide6.QtWidgets import QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QTimeEdit
-
+    from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QLineEdit,
+                                   QSpinBox, QTimeEdit)
     if isinstance(widget, (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit)):
         widget.setMinimumWidth(180)
         widget.setMaximumWidth(320)
     lay.addWidget(widget)
-
     if hint:
         h = hint_label(hint)
         lay.addWidget(h, stretch=1)
@@ -121,10 +138,9 @@ def form_row(label: str, widget: QWidget, hint: str = "") -> QWidget:
 
 
 def section_block(title: str, rows: list[QWidget], note: str = "") -> QWidget:
-    """A titled vertical block of form rows with an optional footnote."""
     w = QWidget()
     lay = QVBoxLayout(w)
-    lay.setContentsMargins(0, 10, 0, 10)
+    lay.setContentsMargins(0, 8, 0, 8)
     lay.setSpacing(2)
     lay.addWidget(section_title(title))
     for r in rows:
@@ -134,8 +150,9 @@ def section_block(title: str, rows: list[QWidget], note: str = "") -> QWidget:
     return w
 
 
-def make_table(headers: list[str], stretch_cols: tuple[int, ...] = ()) -> QTableWidget:
-    """Empty dark table with the given column headers."""
+def make_table(headers: list[str], stretch_cols: tuple[int, ...] = ()):
+    from PySide6.QtWidgets import (QAbstractItemView, QHeaderView,
+                                   QTableWidget, QTableWidgetItem)
     cols = len(headers)
     table = QTableWidget(0, cols)
     table.setHorizontalHeaderLabels(headers)
@@ -149,11 +166,12 @@ def make_table(headers: list[str], stretch_cols: tuple[int, ...] = ()) -> QTable
         header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
     for i in stretch_cols:
         header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+    _ = QTableWidgetItem
     return table
 
 
-def set_placeholder_rows(table: QTableWidget, rows: list[list[str]]) -> None:
-    """Fill a table with clearly-static sample/placeholder rows."""
+def set_placeholder_rows(table, rows: list[list[str]]) -> None:
+    from PySide6.QtWidgets import QTableWidgetItem
     table.setRowCount(len(rows))
     for r, row in enumerate(rows):
         for c, text in enumerate(row):

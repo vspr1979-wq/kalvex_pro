@@ -1,5 +1,7 @@
 """Application bootstrap: theme, main window, event loop."""
 
+from __future__ import annotations
+
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -12,7 +14,7 @@ from kalvex.ui.theme import apply_theme
 def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setQuitOnLastWindowClosed(False)  # tray-first behaviour, per spec
+    app.setQuitOnLastWindowClosed(False)
 
     apply_theme(app)
 

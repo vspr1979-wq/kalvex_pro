@@ -1,4 +1,6 @@
-"""Left navigation sidebar."""
+"""Left navigation rail with cockpit glyphs."""
+
+from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -10,12 +12,31 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from kalvex.core.constants import NAV_WIDTH, PAGE_TITLES, PageId
+from kalvex.core.constants import NAV_WIDTH, PageId
+from kalvex.ui.theme import label_font
+
+GLYPHS = {
+    PageId.DASHBOARD: "◈",
+    PageId.CHARTS: "▦",
+    PageId.BRAIN: "◎",
+    PageId.STRATEGIES: "⬡",
+    PageId.ACTIVITY: "≡",
+    PageId.LOGS: "▤",
+    PageId.SETTINGS: "⚙",
+}
+
+LABELS = {
+    PageId.DASHBOARD: "Dashboard",
+    PageId.CHARTS: "Charts",
+    PageId.BRAIN: "Bot Brain",
+    PageId.STRATEGIES: "Strategies",
+    PageId.ACTIVITY: "Positions / Orders",
+    PageId.LOGS: "Logs",
+    PageId.SETTINGS: "Settings",
+}
 
 
 class NavSidebar(QFrame):
-    """Vertical nav: Dashboard, Charts, Strategies, Positions/Orders, Logs, Settings."""
-
     page_selected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -24,52 +45,42 @@ class NavSidebar(QFrame):
         self.setFixedWidth(NAV_WIDTH)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 14, 10, 14)
-        lay.setSpacing(4)
+        lay.setContentsMargins(8, 12, 8, 12)
+        lay.setSpacing(2)
 
-        section = QLabel("TRADING")
-        section.setObjectName("navSectionLabel")
-        lay.addWidget(section)
-
+        lay.addWidget(self._legend("TRADE"))
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
-
         self._buttons: dict[str, QPushButton] = {}
-        for page in (
-            PageId.DASHBOARD,
-            PageId.CHARTS,
-            PageId.STRATEGIES,
-            PageId.ACTIVITY,
-            PageId.LOGS,
-        ):
-            self._add_nav_button(page.value, PAGE_TITLES[page])
-
-        section2 = QLabel("SYSTEM")
-        section2.setObjectName("navSectionLabel")
-        lay.addWidget(section2)
-        lay.addSpacing(2)
-        self._add_nav_button(PageId.SETTINGS.value, PAGE_TITLES[PageId.SETTINGS])
-
+        for page in (PageId.DASHBOARD, PageId.CHARTS, PageId.BRAIN,
+                     PageId.STRATEGIES, PageId.ACTIVITY, PageId.LOGS):
+            self._add(page)
+        lay.addWidget(self._legend("SYSTEM"))
+        self._add(PageId.SETTINGS)
         lay.addStretch(1)
 
-        # Footer: current mode reminder (always visible in the skeleton).
-        self.mode_note = QLabel("Mode: Paper")
-        self.mode_note.setObjectName("navSectionLabel")
+        self.mode_note = QLabel("MODE: PAPER")
+        self.mode_note.setObjectName("navLegend")
+        self.mode_note.setFont(label_font(8))
         lay.addWidget(self.mode_note)
 
         self._group.buttonClicked.connect(self._on_clicked)
-
-        # Select Dashboard by default.
         self._buttons[PageId.DASHBOARD.value].setChecked(True)
 
-    def _add_nav_button(self, page_id: str, text: str) -> None:
-        btn = QPushButton(text)
-        btn.setObjectName("navButton")
+    def _legend(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("navLegend")
+        lbl.setFont(label_font(8))
+        return lbl
+
+    def _add(self, page: PageId) -> None:
+        btn = QPushButton(f"  {GLYPHS[page]}   {LABELS[page]}")
+        btn.setObjectName("nav")
         btn.setCheckable(True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setMinimumHeight(40)
+        btn.setMinimumHeight(38)
         self._group.addButton(btn)
-        self._buttons[page_id] = btn
+        self._buttons[page.value] = btn
         self.layout().addWidget(btn)
 
     def _on_clicked(self, btn: QPushButton) -> None:
@@ -79,11 +90,10 @@ class NavSidebar(QFrame):
                 return
 
     def select_page(self, page_id: str) -> None:
-        """Programmatic selection (used by tray menu / keyboard later)."""
         btn = self._buttons.get(page_id)
         if btn:
             btn.setChecked(True)
             self.page_selected.emit(page_id)
 
     def set_mode_note(self, mode: str) -> None:
-        self.mode_note.setText(f"Mode: {mode}")
+        self.mode_note.setText(f"MODE: {mode.upper()}")
