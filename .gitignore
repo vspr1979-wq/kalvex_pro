@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated UI previews (regenerate via headless run — see README)
+preview/
+
+# PyInstaller (future packaging)
+build/
+dist/
+*.spec.bak
+
+# Local secrets / tokens — NEVER commit (DPAPI blobs stay local)
+*.db
+*.token
+secrets.*

@@ -1,0 +1,8 @@
+# Kalvex Pro — v1 (UI layout skeleton uses only PySide6)
+PySide6>=6.6
+
+# --- Phase 2+ (planned; NOT used by this layout build) ---
+# lightweight-charts-python   # charts embed (fallback: pyqtgraph)
+# upstox-python               # official Upstox SDK — verify against current v3 docs
+# pandas-ta                   # indicators (TA-Lib optional, C dependency on Windows)
+# smartmoneyconcepts          # SMC overlay/research only — never the sole live strategy
