@@ -33,7 +33,7 @@ class DashboardPage(QWidget):
         root.addWidget(page_header(
             "Dashboard",
             "Live picture of the automated loop — every value is real engine "
-            "state (simulated feed until a broker is connected). All times IST."))
+            "state (live Upstox quotes once connected — no synthetic data). All times IST."))
 
         # ---- instrument row --------------------------------------------
         cards = QHBoxLayout()

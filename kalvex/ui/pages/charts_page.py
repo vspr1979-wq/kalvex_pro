@@ -50,7 +50,7 @@ class ChartsPage(QWidget):
         self.tf_group.buttons()[1].setChecked(True)
 
         bar.addStretch(1)
-        self.feed_chip = legend("feed: SIMULATED", faint=True)
+        self.feed_chip = legend("feed: NO DATA", faint=True)
         bar.addWidget(self.feed_chip)
         root.addLayout(bar)
 

@@ -5,7 +5,10 @@ Windows 11 desktop algo-trading workstation for **one adult retail trader**,
 opt-in behind hard risk limits.
 
 > **This is a specification/tooling artifact — not live trading advice.**
-> The engine runs end-to-end in **Paper mode** on a simulated feed.
+> Production app: **no synthetic market data anywhere in the GUI** —
+> quotes, instruments, chains and lot sizes all come from Upstox.
+> The engine runs end-to-end in **Paper mode** on live quotes; a
+> deterministic sim feed exists only as the `--selftest` harness.
 > The live adapter implements only **verified** Upstox request shapes and
 > refuses everything marked UNKNOWN.
 
@@ -18,7 +21,7 @@ py -3.11 -m venv .venv
 .venv\Scripts\python main.py --selftest   # headless engine self-test
 ```
 
-Designed for minimum 1366x768. Simulated feed clock is accelerated
+Designed for minimum 1366x768. The self-test clock is accelerated
 (see Settings → UI → sim feed speed) so the decision loop is visible.
 
 ## What the bot does (fully automated, transparent)
@@ -52,7 +55,24 @@ losses is auto-disabled pending manual re-arm.
 Nice-to-have later (overlay/alert only, never sole live entry): Bollinger
 squeeze, MACD momentum, SMC FVG/OB/BOS/CHoCH (smartmoneyconcepts).
 
-### Options (v1, opt-in)
+### Modes & execution target (real switching)
+
+| Mode | Behaviour |
+|------|-----------|
+| **Paper** (default) | Simulated fills from live Upstox quotes. Always available. |
+| **Semi-auto** | Signal + explicit confirm dialog before each order. |
+| **Auto** | Unattended. Locked until Paper has been used AND the broker is connected; enabling live routing requires an additional explicit Yes. |
+
+Orders route LIVE only when: mode ∈ {Semi-auto, Auto} **and** broker CONNECTED
+**and** the live opt-in is on. Otherwise they stay paper. Hard risk ceilings
+apply in every mode.
+
+### Options (v1, opt-in — data from Upstox)
+
+Underlyings: NIFTY · SENSEX · BANKNIFTY · FINNIFTY · MIDCAPNIFTY (resolved
+against the Upstox instrument master — MIDCAPNIFTY trades as MIDCPNIFTY).
+Strikes/lot sizes come from `GET /v2/option/contract` rows; nothing is
+synthesised — if the chain cannot be fetched the trade is refused.
 Index options **buying only**; strike picker ATM / ATM±N OTM, current expiry
 first; qty from risk sizing rounded to exchange lot size; forced max holding
 time (theta-aware time exit); IV & Greeks displayed only when the feed
@@ -116,6 +136,22 @@ UI thread (PySide6)                      Bot thread (QThread)
   input.
 * Kill switch, daily loss circuit and hard ceilings are engine-side, not
   UI-side.
+
+## Instruments & market data (all from Upstox)
+
+1. **Instrument master** — `GET https://assets.upstox.com/market-quote/instruments/exchange/complete.json`
+   (public, gzip-aware), cached at `data/instrument_master.json`. Index keys,
+   lot sizes, tick sizes, expiries and option rows are resolved from it.
+2. **Quotes** — `GET /v2/market-quote/quotes?instrument_key=K1,K2` polled at
+   1 Hz; 1-minute bars accumulated in-app. On API errors the feed reports
+   `stale` — it never invents prices.
+3. **Option contracts / chain** — `GET /v2/option/contract` and
+   `GET /v2/option/chain?instrument_key=...&expiry_date=YYYY-MM-DD`.
+4. **Websocket feed** — verified auth/sub/decode flow in
+   `UpstoxWebsocketFeed`; requires the official `MarketDataFeed_pb2` proto
+   compiled (`protobuf`); until then it raises rather than fake data.
+
+Unresolved instruments show `UNKNOWN` and are blocked from trading.
 
 ## Broker connect / disconnect (verified OAuth flow)
 

@@ -1,8 +1,13 @@
-# Kalvex Pro — v1 (UI layout skeleton uses only PySide6)
+# Kalvex Pro — production app
 PySide6>=6.6
+requests>=2.31          # Upstox REST (quotes, option chain/contracts, instrument master)
 
-# --- Phase 2+ (planned; NOT used by this layout build) ---
-# lightweight-charts-python   # charts embed (fallback: pyqtgraph)
-# upstox-python               # official Upstox SDK — verify against current v3 docs
-# pandas-ta                   # indicators (TA-Lib optional, C dependency on Windows)
-# smartmoneyconcepts          # SMC overlay/research only — never the sole live strategy
+# --- Live trading (install before enabling live mode) ---
+# upstox-python               # official Upstox SDK (PlaceOrderV3, websocket auth)
+# websockets                  # market data feed streaming
+# protobuf                    # MarketDataFeed decode (compile official .proto)
+
+# --- Optional / later ---
+# lightweight-charts-python   # richer charts embed (fallback: pyqtgraph)
+# pandas-ta                   # indicator cross-check adapter (TA-Lib optional)
+# smartmoneyconcepts          # SMC overlay/research only — never sole live strategy

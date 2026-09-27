@@ -67,6 +67,9 @@ class NavSidebar(QFrame):
         self._group.buttonClicked.connect(self._on_clicked)
         self._buttons[PageId.DASHBOARD.value].setChecked(True)
 
+    def set_mode_note(self, mode: str) -> None:
+        self.mode_note.setText(f"MODE: {mode.upper()}")
+
     def _legend(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setObjectName("navLegend")
@@ -95,5 +98,3 @@ class NavSidebar(QFrame):
             btn.setChecked(True)
             self.page_selected.emit(page_id)
 
-    def set_mode_note(self, mode: str) -> None:
-        self.mode_note.setText(f"MODE: {mode.upper()}")

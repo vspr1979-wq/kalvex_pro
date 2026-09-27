@@ -1,12 +1,21 @@
-"""Main window — wires the Ember Terminal UI to the live engine.
+"""Main window — Ember Terminal wired to the PRODUCTION engine.
 
-Thread model (v1):
-  * UI thread  : Qt widgets, timers for display refresh
-  * Bot thread : BotWorker(QThread) runs the decision pipeline
-  * Feed       : SimFeedProvider ticks from a UI timer (real Upstox websocket
-                 feed will run its own worker thread — see market_data.py)
-All cross-thread traffic is Qt signals; engine state is guarded by the bot's
-lock. Restart recovery: engine state is rebuilt from SQLite on startup.
+Data & execution:
+  * market data comes from Upstox (verified quote endpoint) once the broker
+    is connected — there is NO synthetic data in the GUI; disconnected means
+    'no data' rather than fake prices.
+  * instruments (NIFTY / SENSEX / BANKNIFTY / FINNIFTY / MIDCAPNIFTY) are
+    resolved from the Upstox instrument master (lot sizes, keys, strikes).
+  * Paper / Semi-auto / Auto is a real execution switch:
+      Paper  -> simulated fills from LIVE quotes (default)
+      Semi   -> signal + confirm dialog, then the chosen execution target
+      Auto   -> unattended; live orders only with broker connected AND the
+                explicit live opt-in (and after Paper has been used)
+  * live orders go through the official SDK (verified fields, X-Algo-Name,
+    static-IP requirement, 10/sec throttle); raw MARKET is refused.
+
+Threads: UI thread + BotWorker(QThread); cross-thread traffic is Qt
+signals; engine state is lock-guarded in the bot.
 """
 
 from __future__ import annotations
@@ -35,11 +44,12 @@ from kalvex.core.constants import (
 )
 from kalvex.core.db import Database
 from kalvex.core.execution import PaperEngine
-from kalvex.core.instruments import DEFAULT_BOOK
-from kalvex.core.market_data import SimFeedProvider
+from kalvex.core.instruments import InstrumentMaster, InstrumentSpec
+from kalvex.core.market_data import UpstoxLiveFeed
 from kalvex.core.risk import RiskConfig
 from kalvex.core.security import TokenStore
 from kalvex.core.session import BrokerSession, ConnectionState
+from kalvex.core.upstox_api import UpstoxApi
 from kalvex.ui.connect_dialog import ConnectDialog
 from kalvex.ui.nav_sidebar import NavSidebar
 from kalvex.ui.pages.activity_page import ActivityPage
@@ -55,13 +65,13 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db_path: str = "data/kalvex.db", sim: bool = True) -> None:
+    def __init__(self, db_path: str = "data/kalvex.db") -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — Ember Terminal · Paper · {APP_VERSION}")
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
 
-        # ---------------- engine ----------------
+        # ---------------- persistence ----------------
         self.db = Database(db_path)
         for k, v in {
             "capital": "500000", "risk_per_trade_pct": "1.0",
@@ -69,14 +79,22 @@ class MainWindow(QMainWindow):
             "daily_max_loss": "5000", "square_off_time": "15:15",
             "session_open": "09:15", "session_close": "15:30",
             "auto_tune": "1", "options_enabled": "0",
+            "options_underlying": "NIFTY", "options_otm_width": "0",
+            "options_expiry": "current", "live_enabled": "0",
         }.items():
             if self.db.get_setting(k) == "":
                 self.db.set_setting(k, v)
 
-        self.sim = sim
-        self.feed = SimFeedProvider(
-            {name: spec.base_price for name, spec in DEFAULT_BOOK.items()},
-            seed=42, speed=float(self.db.get_setting("sim_speed", "5")))
+        # ---------------- instruments (Upstox master) ----------------
+        self.master = InstrumentMaster("data")
+
+        # ---------------- broker session ----------------
+        self.token_store = TokenStore("data")
+        self.session = BrokerSession(self.token_store)
+        self.api = UpstoxApi(lambda: self.token_store.load()[0])
+
+        # ---------------- feed + engines ----------------
+        self.feed = UpstoxLiveFeed(self.api, {})
         self.broker = PaperEngine(
             self.db, fee_per_order=float(self.db.get_setting("fee_per_order", "20")))
         risk_cfg = RiskConfig(
@@ -89,15 +107,12 @@ class MainWindow(QMainWindow):
             daily_profit_stop=float(self.db.get_setting("daily_profit_stop", "10000")),
             profit_stop_enabled=self.db.get_setting("profit_stop_enabled", "0") == "1",
             trailing_start_profit=float(self.db.get_setting("trailing_start_profit", "500")),
-            lot_size=75,
+            lot_size=1,   # per-instrument lot sizes come from Upstox rows
         )
         self.bot = BotWorker(self.db, self.feed, self.broker, risk_cfg,
-                             mode=BotMode.PAPER,
-                             instruments=DEFAULT_BOOK, cycle_seconds=1.0)
-
-        # ---------------- broker session (OAuth connect/disconnect) ------
-        self.token_store = TokenStore("data")
-        self.session = BrokerSession(self.token_store)
+                             mode=BotMode.PAPER, instruments={},
+                             cycle_seconds=1.0)
+        self.bot.set_api(self.api)
 
         # ---------------- UI shell ----------------
         central = QWidget()
@@ -141,24 +156,22 @@ class MainWindow(QMainWindow):
         outer.addLayout(row, stretch=1)
         self.setCentralWidget(central)
 
-        self.page_charts.set_symbols(list(DEFAULT_BOOK.keys()))
-        self._load_session_config()   # needs the settings page to exist
-
         # ---------------- wiring ----------------
         self.nav.page_selected.connect(self._show_page)
         self.top_bar.kill_switch_requested.connect(self._kill_switch)
         self.top_bar.start_stop_clicked.connect(self._toggle_bot)
         self.top_bar.connect_clicked.connect(self._on_connect_clicked)
+        self.top_bar.mode_changed.connect(self._on_mode_changed)
         self.page_settings.connect_requested.connect(self._on_connect_clicked)
         self.page_settings.disconnect_requested.connect(self._on_disconnect)
         self.page_settings.api_key.editingFinished.connect(self._save_session_config)
         self.page_settings.api_secret.editingFinished.connect(self._save_session_config)
         self.page_settings.redirect.editingFinished.connect(self._save_session_config)
         self.page_settings.algo_name.editingFinished.connect(self._save_session_config)
+        self.page_settings.fetch_master_clicked.connect(self._fetch_master)
         self.bot.thought.connect(self._on_thought)
         self.bot.pnl_update.connect(self._on_pnl)
         self.bot.state_changed.connect(self.top_bar.set_state)
-        self.bot.state_changed.connect(lambda s: self.db.log("INFO", "UI", "STATE", s))
         self.bot.toast.connect(self._on_toast)
         self.bot.semi_confirm.connect(self._on_semi_confirm)
         self.bot.positions_changed.connect(self._refresh_data_pages)
@@ -167,24 +180,192 @@ class MainWindow(QMainWindow):
 
         # ---------------- timers ----------------
         self._feed_timer = QTimer(self)
-        self._feed_timer.timeout.connect(self._advance_feed)
-        self._feed_timer.start(300)
+        self._feed_timer.timeout.connect(self._poll_feed)
+        self._feed_timer.start(1000)        # live quotes: 1 poll/sec
 
         self._ui_timer = QTimer(self)
         self._ui_timer.timeout.connect(self._refresh_ui)
         self._ui_timer.start(1500)
         self._refresh_ui()
+        self._load_session_config()   # restore broker config + cached master
 
         # ---------------- tray ----------------
         self._build_tray()
 
     # ------------------------------------------------------------------ #
-    # feed + UI refresh
+    # instruments
     # ------------------------------------------------------------------ #
-    def _advance_feed(self) -> None:
-        self.feed.tick()
-        if self.bot.state.value == "RUNNING" and hasattr(self.broker, "on_tick"):
-            ltps = {n: self.feed.ltp(n) for n in DEFAULT_BOOK}
+    def _apply_master(self) -> None:
+        """Build the working book + live feed from the Upstox master."""
+        specs = self.master.watchlist()
+        book: dict[str, InstrumentSpec] = {s.display: s for s in specs}
+        self.bot.set_book(book)
+        keys = {s.display: s.key for s in specs if s.resolved and s.key}
+        self.feed.set_instruments(keys)
+        self.page_charts.set_symbols(list(book.keys()))
+        resolved = sum(1 for s in specs if s.resolved)
+        self.page_settings.set_master_status(
+            f"{self.master.count} rows · fetched {self.master.fetched_at or 'never'}"
+            f" · {resolved}/{len(specs)} watchlist indices resolved")
+        for s in specs:
+            if not s.resolved:
+                self.db.log("WARNING", "Feed", "INSTRUMENT_UNKNOWN",
+                            f"{s.display}: {s.note}")
+
+    def _fetch_master(self) -> None:
+        try:
+            n = self.master.fetch()
+        except Exception as e:
+            self.db.log("ERROR", "Feed", "MASTER_FETCH_FAILED", repr(e)[:200])
+            self._on_toast(f"Instrument master fetch failed: {e}")
+            return
+        self._apply_master()
+        self.db.log("INFO", "Feed", "MASTER_FETCHED", f"{n} instruments")
+        self._on_toast(f"Instrument master loaded from Upstox ({n} rows).")
+
+    # ------------------------------------------------------------------ #
+    # broker session: connect / disconnect
+    # ------------------------------------------------------------------ #
+    def _load_session_config(self) -> None:
+        cfg = {
+            "client_id": self.db.get_setting("api_key", ""),
+            "client_secret": self.db.get_setting("api_secret", ""),
+            "redirect_uri": self.db.get_setting("redirect_uri", ""),
+            "algo_name": self.db.get_setting("algo_name", ""),
+            "static_ip": self.db.get_setting("static_ip", ""),
+        }
+        self.session.configure(cfg["client_id"], cfg["client_secret"],
+                               cfg["redirect_uri"], cfg["algo_name"],
+                               sandbox=True)
+        self.page_settings.set_broker_fields(cfg)
+        self._refresh_broker_ui()
+        self._apply_master()      # load cached master if present
+
+    def _save_session_config(self) -> None:
+        cfg = self.page_settings.broker_config()
+        for key in ("client_id", "client_secret", "redirect_uri", "algo_name",
+                    "static_ip"):
+            self.db.set_setting(key, cfg[key])
+        self.session.configure(cfg["client_id"], cfg["client_secret"],
+                               cfg["redirect_uri"], cfg["algo_name"],
+                               sandbox=True)
+
+    def _refresh_broker_ui(self) -> None:
+        st = self.session.status()
+        connected = st.state == ConnectionState.CONNECTED
+        if connected and not self.feed.last_error:
+            self.top_bar.set_feed("LIVE · Upstox")
+        elif connected:
+            self.top_bar.set_feed("LIVE · degraded")
+        else:
+            self.top_bar.set_feed("NO DATA · disconnected")
+        self.page_charts.feed_chip.setText(
+            "feed: LIVE Upstox" if connected and not self.feed.last_error
+            else "feed: NO DATA")
+        self.top_bar.set_broker(st.describe(), st.state.value)
+        self.page_settings.set_broker_status(
+            st.describe() + (f"  ·  algo={st.algo_name}" if st.algo_name else ""),
+            st.state == ConnectionState.CONNECTED)
+
+    def _on_connect_clicked(self) -> None:
+        st = self.session.status()
+        if st.state == ConnectionState.CONNECTED:
+            self._on_disconnect()
+            return
+        self._save_session_config()
+        dlg = ConnectDialog(self.session, self)
+        dlg.connected.connect(self._on_broker_connected)
+        dlg.exec()
+
+    def _on_broker_connected(self, info: dict) -> None:
+        self.db.set_setting("api_key", info["client_id"])
+        self.db.set_setting("api_secret", info["client_secret"])
+        self.db.set_setting("redirect_uri", info["redirect_uri"])
+        self.db.set_setting("algo_name", info["algo_name"])
+        self.db.log("INFO", "Auth", "BROKER_CONNECTED",
+                    f"token valid until {info['expires_at']} (03:30 IST rule)")
+        self._refresh_broker_ui()
+        adapter = self.session.adapter()
+        self.bot.set_live_broker(adapter)
+        try:
+            funds = adapter.get_funds()
+            avail = float(funds.get("available_margin", 0.0) or 0.0)
+            self.top_bar.funds_val.setText(f"₹ {avail:,.0f}")
+        except Exception as e:
+            self.db.log("WARNING", "Broker", "FUNDS_FETCH_FAILED", repr(e)[:200])
+            self.top_bar.funds_val.setText("₹ —")
+        self._fetch_master()      # production instruments come from Upstox
+        self._on_toast("Upstox CONNECTED — live quotes streaming. Trading "
+                       "remains in Paper mode until you switch mode.")
+
+    def _on_disconnect(self) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Disconnect broker")
+        box.setText("Disconnect and wipe the stored access token?")
+        box.setInformativeText(
+            "Live data and live order routing stop until the next daily "
+            "OAuth login. Paper trading keeps working with the last quotes.")
+        ok = box.addButton("Disconnect", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not ok:
+            return
+        self.session.disconnect()
+        self.bot.set_live_broker(None)
+        self.top_bar.funds_val.setText("₹ —")
+        self.db.log("INFO", "Auth", "BROKER_DISCONNECTED", "token wiped")
+        self._refresh_broker_ui()
+        self._on_toast("Broker disconnected — token wiped.")
+
+    # ------------------------------------------------------------------ #
+    # mode switching (Paper / Semi-auto / Auto)
+    # ------------------------------------------------------------------ #
+    def _on_mode_changed(self, mode: str) -> None:
+        bot_mode = {"Paper": BotMode.PAPER, "Semi-auto": BotMode.SEMI_AUTO,
+                    "Auto": BotMode.AUTO}.get(mode, BotMode.PAPER)
+
+        if bot_mode == BotMode.AUTO:
+            blockers = []
+            if self.db.get_state("paper_used", "0") != "1":
+                blockers.append("Paper mode has not been used yet")
+            if self.session.status().state != ConnectionState.CONNECTED:
+                blockers.append("broker is not connected")
+            if blockers:
+                QMessageBox.warning(
+                    self, "Auto mode locked",
+                    "Cannot switch to Auto:\n· " + "\n· ".join(blockers))
+                self.top_bar.btn_paper.setChecked(True)
+                return
+            live = QMessageBox.question(
+                self, "Enable LIVE order routing?",
+                "Auto mode with a connected broker sends REAL orders to "
+                "Upstox (hard risk ceilings still apply: 2%/trade, 10 orders/"
+                "sec, daily loss flatten, kill switch).\n\n"
+                "Choose Yes for LIVE orders, No to run Auto on paper fills.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            live_enabled = live == QMessageBox.StandardButton.Yes
+        else:
+            live_enabled = False
+
+        self.bot.set_mode(bot_mode, live_enabled=live_enabled)
+        self.nav.set_mode_note(bot_mode.value)
+        target = self.bot.execution_target.value
+        self.db.log("INFO", "UI", "MODE_SWITCH",
+                    f"{bot_mode.value} -> execution {target}")
+        self._on_toast(f"Mode: {bot_mode.value} — execution: {target}")
+
+    # ------------------------------------------------------------------ #
+    # feed polling (live quotes only)
+    # ------------------------------------------------------------------ #
+    def _poll_feed(self) -> None:
+        if self.session.status().state != ConnectionState.CONNECTED:
+            return
+        ticks = self.feed.poll()
+        if ticks and self.bot.state.value == "RUNNING" and \
+                hasattr(self.broker, "on_tick"):
+            ltps = {n: self.feed.ltp(n) for n in self.bot.book}
             trades = self.broker.on_tick(ltps)
             if trades:
                 from kalvex.core.models import Side as _Side
@@ -199,7 +380,8 @@ class MainWindow(QMainWindow):
     def _refresh_ui(self) -> None:
         self._refresh_broker_ui()
         from kalvex.core import indicators as ind
-        bars = self.feed.bars("NIFTY 50")
+        sym = self.page_charts.symbol.currentText()
+        bars = self.feed.bars(sym) if sym else []
         if len(bars) > 5:
             closes = [b.close for b in bars]
             self.page_charts.chart.set_data(
@@ -280,89 +462,6 @@ class MainWindow(QMainWindow):
         self.page_brain.set_reviews(self.db.recent_reviews(30))
 
     # ------------------------------------------------------------------ #
-    # broker session: connect / disconnect
-    # ------------------------------------------------------------------ #
-    def _load_session_config(self) -> None:
-        cfg = {
-            "client_id": self.db.get_setting("api_key", ""),
-            "client_secret": self.db.get_setting("api_secret", ""),
-            "redirect_uri": self.db.get_setting("redirect_uri", ""),
-            "algo_name": self.db.get_setting("algo_name", ""),
-            "static_ip": self.db.get_setting("static_ip", ""),
-        }
-        self.session.configure(cfg["client_id"], cfg["client_secret"],
-                               cfg["redirect_uri"], cfg["algo_name"],
-                               sandbox=True)
-        self.page_settings.set_broker_fields(cfg)
-        self._refresh_broker_ui()
-
-    def _save_session_config(self) -> None:
-        cfg = self.page_settings.broker_config()
-        for key in ("client_id", "client_secret", "redirect_uri", "algo_name",
-                    "static_ip"):
-            self.db.set_setting(key, cfg[key])
-        self.session.configure(cfg["client_id"], cfg["client_secret"],
-                               cfg["redirect_uri"], cfg["algo_name"],
-                               sandbox=True)
-
-    def _refresh_broker_ui(self) -> None:
-        st = self.session.status()
-        self.top_bar.set_broker(st.describe(), st.state.value)
-        self.page_settings.set_broker_status(
-            st.describe() + (f"  ·  algo={st.algo_name}" if st.algo_name else ""),
-            st.state == ConnectionState.CONNECTED)
-
-    def _on_connect_clicked(self) -> None:
-        st = self.session.status()
-        if st.state == ConnectionState.CONNECTED:
-            self._on_disconnect()
-            return
-        self._save_session_config()
-        dlg = ConnectDialog(self.session, self)
-        dlg.connected.connect(self._on_broker_connected)
-        dlg.exec()
-
-    def _on_broker_connected(self, info: dict) -> None:
-        self.db.set_setting("api_key", info["client_id"])
-        self.db.set_setting("api_secret", info["client_secret"])
-        self.db.set_setting("redirect_uri", info["redirect_uri"])
-        self.db.set_setting("algo_name", info["algo_name"])
-        self.db.log("INFO", "Auth", "BROKER_CONNECTED",
-                    f"token valid until {info['expires_at']} "
-                    f"(03:30 IST rule); sandbox={info['sandbox']}")
-        self._refresh_broker_ui()
-        # best-effort funds display (single call at connect; failures are fine)
-        try:
-            funds = self.session.adapter().get_funds()
-            avail = float(funds.get("available_margin", 0.0) or 0.0)
-            self.top_bar.funds_val.setText(f"₹ {avail:,.0f}")
-        except Exception as e:
-            self.db.log("WARNING", "Broker", "FUNDS_FETCH_FAILED",
-                        repr(e)[:200])
-            self.top_bar.funds_val.setText("₹ —")
-        self._on_toast("Upstox broker CONNECTED — token stored (DPAPI). "
-                       "Trading remains in Paper mode until Auto opt-in.")
-
-    def _on_disconnect(self) -> None:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("Disconnect broker")
-        box.setText("Disconnect and wipe the stored access token?")
-        box.setInformativeText(
-            "Live order routing becomes impossible until the next daily "
-            "OAuth login. Paper trading keeps working.")
-        ok = box.addButton("Disconnect", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is not ok:
-            return
-        self.session.disconnect()
-        self.top_bar.funds_val.setText("₹ —")
-        self.db.log("INFO", "Auth", "BROKER_DISCONNECTED", "token wiped")
-        self._refresh_broker_ui()
-        self._on_toast("Broker disconnected — token wiped. Paper mode continues.")
-
-    # ------------------------------------------------------------------ #
     # bot control
     # ------------------------------------------------------------------ #
     def _toggle_bot(self) -> None:
@@ -373,9 +472,23 @@ class MainWindow(QMainWindow):
         else:
             if self.bot.isRunning():
                 return
+            if not self.bot.book:
+                QMessageBox.warning(
+                    self, "No instruments",
+                    "The Upstox instrument master is not loaded — connect "
+                    "the broker (or press 'Fetch from Upstox') first. "
+                    "The app never trades on placeholder instruments.")
+                return
+            prev = self.bot
+            live = prev.live_broker or (
+                self.session.adapter()
+                if self.session.status().state == ConnectionState.CONNECTED
+                else None)
             self.bot = BotWorker(self.db, self.feed, self.broker,
-                                 self.bot.risk.config, mode=BotMode.PAPER,
-                                 instruments=DEFAULT_BOOK, cycle_seconds=1.0)
+                                 prev.risk.config, mode=prev.mode,
+                                 instruments=prev.book, cycle_seconds=1.0)
+            self.bot.set_api(self.api)
+            self.bot.set_live_broker(live)
             self.bot.thought.connect(self._on_thought)
             self.bot.pnl_update.connect(self._on_pnl)
             self.bot.state_changed.connect(self.top_bar.set_state)
@@ -383,7 +496,7 @@ class MainWindow(QMainWindow):
             self.bot.semi_confirm.connect(self._on_semi_confirm)
             self.bot.positions_changed.connect(self._refresh_data_pages)
             self.bot.start()
-            self.db.log("INFO", "UI", "BOT_START", "paper mode")
+            self.db.log("INFO", "UI", "BOT_START", f"mode={self.bot.mode.value}")
 
     def _kill_switch(self) -> None:
         self.bot.kill_switch()
@@ -407,9 +520,10 @@ class MainWindow(QMainWindow):
         box.setText(f"Semi-auto signal: {sig.side.value} {sig.instrument} "
                     f"@ {sig.entry:,.2f}")
         box.setInformativeText(
-            f"SL {sig.sl:,.2f} · target {sig.target:,.2f} · qty {decision.qty}\n\n"
+            f"SL {sig.sl:,.2f} · target {sig.target:,.2f} · qty {decision.qty}\n"
+            f"Execution target: {self.bot.execution_target.value}\n\n"
             f"{sig.thought}")
-        yes = box.addButton("CONFIRM (paper)", QMessageBox.ButtonRole.AcceptRole)
+        yes = box.addButton("CONFIRM", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Reject", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         self.bot.confirm_semi(payload, box.clickedButton() is yes)

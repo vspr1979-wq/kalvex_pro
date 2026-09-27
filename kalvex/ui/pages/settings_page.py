@@ -35,6 +35,7 @@ def _scrollable(content: QWidget) -> QWidget:
 class SettingsPage(QWidget):
     connect_requested = Signal()
     disconnect_requested = Signal()
+    fetch_master_clicked = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -91,6 +92,18 @@ class SettingsPage(QWidget):
         self.algo_name.setText(cfg.get("algo_name", ""))
         self.static_ip.setText(cfg.get("static_ip", ""))
 
+    def _master_row(self) -> QWidget:
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(self.fetch_master_btn)
+        lay.addStretch(1)
+        return row
+
+    def set_master_status(self, text: str) -> None:
+        self.master_status.setText(text)
+
     def set_broker_status(self, describe: str, connected: bool) -> None:
         self.token_status.setText(describe)
         self.token_status.setStyleSheet(
@@ -111,7 +124,7 @@ class SettingsPage(QWidget):
         self.redirect = QLineEdit()
         self.redirect.setPlaceholderText("must EXACTLY match the registered redirect URI")
         self.algo_name = QLineEdit()
-        self.algo_name.setPlaceholderText="e.g. KalvexPro_v1 (configured in My Apps)"
+        self.algo_name.setPlaceholderText("e.g. KalvexPro_v1 (configured in My Apps)")
         self.static_ip = QLineEdit()
         self.static_ip.setPlaceholderText("registered primary/secondary IP")
         self.token_status = QLineEdit("DISCONNECTED")
@@ -135,6 +148,21 @@ class SettingsPage(QWidget):
             note="Token exchange: POST /v2/login/authorization/token "
                  "(grant_type=authorization_code). Store: Windows DPAPI.",
         ))
+
+        self.fetch_master_btn = QPushButton("FETCH INSTRUMENT MASTER FROM UPSTOX")
+        self.fetch_master_btn.clicked.connect(self.fetch_master_clicked.emit)
+        self.master_status = QLineEdit("not loaded")
+        self.master_status.setReadOnly(True)
+        lay.addWidget(section_block(
+            "INSTRUMENTS — LIVE FROM UPSTOX (verified endpoint)",
+            [
+                form_row("Instrument master", self._master_row()),
+                form_row("Status", self.master_status,
+                         hint="GET https://assets.upstox.com/market-quote/"
+                              "instruments/exchange/complete.json — public, no "
+                              "auth. Contains exchange keys, lot sizes, strikes. "
+                              "Nothing is synthesised when the fetch fails."),
+            ]))
 
         sandbox = QCheckBox("Sandbox toggle (official SDK: Configuration(sandbox=True))")
         sandbox.setChecked(True)
@@ -245,26 +273,48 @@ class SettingsPage(QWidget):
             ],
             note="Per-strategy parameters live on the Strategies page "
                  "(editable within hard tune bands)."))
-        options_on = QCheckBox("Enable index options buying (opt-in)")
-        width = QSpinBox()
-        width.setRange(0, 10)
-        width.setValue(0)
+        self.options_enabled = QCheckBox("Enable index options buying (opt-in)")
+        self.options_underlying = QComboBox()
+        self.options_underlying.addItems(["NIFTY", "SENSEX", "BANKNIFTY",
+                                          "FINNIFTY", "MIDCAPNIFTY"])
+        self.options_otm_width = QSpinBox()
+        self.options_otm_width.setRange(0, 10)
+        self.options_otm_width.setValue(0)
+        self.options_expiry = QComboBox()
+        self.options_expiry.addItems(["current", "next"])
         hold = QSpinBox()
         hold.setRange(5, 240)
         hold.setValue(45)
         hold.setSuffix(" min")
         lay.addWidget(section_block(
-            "OPTIONS (V1, LIMITED)",
+            "OPTIONS (V1, LIMITED) — CONTRACTS FROM UPSTOX",
             [
-                form_row("", options_on,
+                form_row("", self.options_enabled,
                          hint="Index options BUYING only. No multi-leg in v1."),
-                form_row("Strike picker", QComboBox(),  # populated in code
-                         hint="ATM / ATM ± N strikes OTM, current expiry first."),
-                form_row("OTM width (strikes)", width),
+                form_row("Underlying index", self.options_underlying,
+                         hint="NIFTY / SENSEX / BANKNIFTY / FINNIFTY / "
+                              "MIDCAPNIFTY — resolved against the Upstox "
+                              "instrument master (MIDCAPNIFTY trades as "
+                              "MIDCPNIFTY on NSE)."),
+                form_row("OTM width (strikes)", self.options_otm_width),
+                form_row("Expiry", self.options_expiry,
+                         hint="current / next expiry from Upstox contract rows."),
                 form_row("Max holding time", hold,
                          hint="theta-aware time exit is mandatory; IV/Greeks "
                               "only if the feed provides them (no invented "
                               "pricing models)."),
+            ]))
+
+        self.live_enabled = QCheckBox(
+            "Enable LIVE order routing (real orders via Upstox)")
+        lay.addWidget(section_block(
+            "EXECUTION",
+            [
+                form_row("", self.live_enabled,
+                         hint="Off by default. Live routing also requires a "
+                              "connected broker and switching the top-bar "
+                              "mode to Semi-auto/Auto with explicit "
+                              "confirmation. Hard risk ceilings always apply."),
             ]))
         lay.addStretch(1)
         return w
@@ -330,14 +380,15 @@ class SettingsPage(QWidget):
         speed.setValue(5)
         speed.setSuffix("× realtime")
         lay.addWidget(section_block(
-            "APPEARANCE & DEMO FEED",
+            "APPEARANCE & FEED",
             [
                 form_row("Theme", theme_cb),
                 form_row("Windows toast on signals", QCheckBox("On")),
                 form_row("Minimize to tray on close", QCheckBox("On")),
                 form_row("Confirm before kill switch", QCheckBox("On (recommended)")),
-                form_row("Sim feed speed", speed,
-                         hint="SIMULATED feed clock multiplier for demos/self-tests."),
+                form_row("Chart refresh", speed,
+                         hint="UI redraw cadence (data cadence is the live "
+                              "Upstox quote poll)."),
             ]))
         lay.addStretch(1)
         return w

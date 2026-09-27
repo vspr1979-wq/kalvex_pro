@@ -27,6 +27,28 @@ from kalvex.core.risk import RiskConfig, RiskManager
 from kalvex.core.bot import BotWorker
 from kalvex.core.strategies import TUNE_BANDS
 from kalvex.core.session import IST
+from kalvex.core.instruments import InstrumentSpec, InstrumentMaster
+from kalvex.core.options import (
+    lots_for_risk, pick_strike_from_contracts, time_exit_due)
+
+
+# TEST FIXTURE ONLY — the production app resolves instruments (keys, lot
+# sizes) from the live Upstox instrument master. These rows exist purely so
+# the offline self-test has something deterministic to trade.
+TEST_BOOK = {
+    "NIFTY 50": InstrumentSpec(
+        display="NIFTY 50", key="NSE_INDEX|Nifty 50", trading_symbol="NIFTY",
+        name="Nifty 50", segment="NSE_INDEX",
+        instrument_type="INDEX", lot_size=75, tick_size=0.05, resolved=True),
+    "NIFTY FUT": InstrumentSpec(
+        display="NIFTY FUT", key="NSE_FO|NIFTY FUT TEST", trading_symbol="NIFTYFUT",
+        name="NIFTY FUT", segment="NSE_FO",
+        instrument_type="FUT", lot_size=75, tick_size=0.05, resolved=True),
+    "RELIANCE": InstrumentSpec(
+        display="RELIANCE", key="NSE_EQ|INE002A01018", trading_symbol="RELIANCE",
+        name="RELIANCE", segment="NSE_EQ",
+        instrument_type="EQ", lot_size=1, tick_size=0.05, resolved=True),
+}
 
 
 def build_world(db_path: str, seed: int = 11, capital: float = 500_000.0):
@@ -47,7 +69,8 @@ def build_world(db_path: str, seed: int = 11, capital: float = 500_000.0):
     cfg = RiskConfig(capital=capital, risk_per_trade_pct=1.0, max_open_positions=3,
                      max_lots=2, max_orders_per_min=40, daily_max_loss=8000.0,
                      lot_size=75)
-    bot = BotWorker(db, feed, broker, cfg, mode=BotMode.PAPER, cycle_seconds=0.0)
+    bot = BotWorker(db, feed, broker, cfg, mode=BotMode.PAPER,
+                    instruments=TEST_BOOK, cycle_seconds=0.0)
     return db, feed, broker, bot
 
 
@@ -237,6 +260,69 @@ def main() -> int:
                    (datetime.now(IST) - timedelta(hours=1)).isoformat())
         check("past 03:30 cut-off -> EXPIRED",
               sess.status().state == ConnectionState.EXPIRED)
+
+        # ---- Upstox contract machinery (offline fixtures) --------------
+        from types import SimpleNamespace as NS
+        def _c(strike):
+            return NS(strike_price=strike, instrument_type="CE",
+                      expiry="2026-09-30",
+                      instrument_key=f"NSE_FO|OPTKEY_CE_{int(strike)}",
+                      trading_symbol=f"NIFTY30SEP{int(strike)}CE",
+                      lot_size=75, tick_size=0.05, freeze_quantity=3750)
+        contracts = [_c(24700.0), _c(24750.0), _c(24800.0), _c(24850.0)]
+        pick, thought = pick_strike_from_contracts(contracts, 24780.0, "CE")
+        check("ATM strike picked from Upstox contract rows",
+              pick is not None and pick.strike_price == 24800.0
+              and pick.instrument_key == "NSE_FO|OPTKEY_CE_24800",
+              f"picked {getattr(pick, 'strike_price', None)} — {thought[:70]}")
+        pick2, _ = pick_strike_from_contracts(contracts, 24780.0, "CE", otm_width=1)
+        check("OTM width moves selection along real strikes",
+              pick2 is not None and pick2.strike_price == 24850.0)
+        pick3, t3 = pick_strike_from_contracts([], 24780.0, "CE")
+        check("no contracts -> NO strike invented",
+              pick3 is None and "no ce rows" in t3.lower())
+
+        lots, qty, lth = lots_for_risk(500_000.0, 1.0, 24800.0, 24750.0,
+                                       75, 10)
+        check("risk-based lots use exchange lot size (75)",
+              lots == 1 and qty == 75 and lots <= 10,
+              f"{lots} lot(s) = {qty} qty — {lth[:60]}")
+        lots2, qty2, _ = lots_for_risk(500_000.0, 1.0, 100.0, 90.0, 0, 10)
+        check("lot_size<=0 rejected (no guessed lot sizes)",
+              lots2 == 0 and qty2 == 0)
+        check("time exit due after max_hold_seconds",
+              time_exit_due(0.0, 400.0, 300)
+              and not time_exit_due(0.0, 200.0, 300))
+
+        # instrument master resolution against a fixture master row set
+        master = InstrumentMaster(Path(tmp) / "master")
+        master._index([
+            {"instrument_key": "NSE_INDEX|Nifty 50", "trading_symbol": "NIFTY",
+             "name": "Nifty 50", "exchange": "NSE", "segment": "NSE_INDEX",
+             "instrument_type": "INDEX", "lot_size": 75, "tick_size": 0.05},
+            {"instrument_key": "BSE_INDEX|SENSEX", "trading_symbol": "SENSEX",
+             "name": "SENSEX", "exchange": "BSE", "segment": "BSE_INDEX",
+             "instrument_type": "INDEX", "lot_size": 20, "tick_size": 0.05},
+            {"instrument_key": "NSE_FO|NIFTY28SEP24700CE",
+             "trading_symbol": "NIFTY28SEP24700CE", "name": "NIFTY",
+             "exchange": "NSE_FO", "segment": "NSE_FO", "instrument_type": "CE",
+             "strike_price": 24700.0, "expiry": "2026-09-28",
+             "underlying_key": "NSE_INDEX|Nifty 50", "lot_size": 75,
+             "tick_size": 0.05},
+        ])
+        check("master resolves NIFTY + SENSEX keys",
+              master.resolve_index("NIFTY").key == "NSE_INDEX|Nifty 50"
+              and master.resolve_index("SENSEX").key == "BSE_INDEX|SENSEX")
+        unresolved = master.resolve_index("MIDCAPNIFTY")
+        check("unresolved index flagged (never guessed)",
+              unresolved.resolved is False and "UNKNOWN" in unresolved.note)
+        exps = master.expiries_from_master("NSE_INDEX|Nifty 50")
+        check("expiries taken from master option rows",
+              exps == ["2026-09-28"], str(exps))
+        stub_api = NS(option_contracts=lambda key, expiry=None: contracts[:1])
+        oc = master.option_contracts(stub_api, "NSE_INDEX|Nifty 50")
+        check("option_contracts() delegates to live Upstox contract rows",
+              len(oc) == 1 and oc[0].lot_size == 75)
 
         # ---- sample thought stream ------------------------------------
         rows = db.query("SELECT ts, stage, strategy_key, thought FROM decision_log "

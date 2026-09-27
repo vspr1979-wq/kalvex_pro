@@ -1,22 +1,24 @@
 """Market data providers.
 
-- SimFeedProvider: deterministic, regime-switching synthetic ticks/bars for
-  paper trading and self-tests. Clearly labelled SIMULATED everywhere.
-- UpstoxFeedProvider: verified shape (authorize -> websocket -> protobuf
-  FeedResponse). Requires upstox-python + the official MarketDataFeed proto
-  compiled to MarketDataFeed_pb2. Anything unverified raises with an
-  explicit UNKNOWN marker — nothing is invented.
+- UpstoxLiveFeed : PRODUCTION feed — live quotes polled from the verified
+  GET /v2/market-quote/quotes endpoint (bars accumulated from the live
+  stream; the websocket protobuf feed can replace the polling loop when
+  MarketDataFeed_pb2 is compiled from the official proto).
+- SimFeedProvider: TEST HARNESS ONLY — used exclusively by
+  `python main.py --selftest` to exercise the engine offline. It is NOT
+  wired into the GUI: when the broker is disconnected the app shows no
+  data rather than synthetic prices.
 """
 
 from __future__ import annotations
 
-import json
 import random
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from kalvex.core.models import Bar, Tick
+from kalvex.core.upstox_api import UpstoxApi
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -36,11 +38,94 @@ class FeedProvider(ABC):
         return {}
 
 
-class SimFeedProvider(FeedProvider):
-    """Regime-switching random walk with an accelerated virtual clock.
+class UpstoxLiveFeed(FeedProvider):
+    """Live quotes from Upstox REST (verified endpoint), 1-minute bars
+    accumulated from the stream. Display names map to instrument keys."""
 
-    Designed for deterministic self-tests and live UI demos of the bot's
-    decision loop without any broker connection.
+    def __init__(self, api: UpstoxApi, instruments: dict[str, str]) -> None:
+        """instruments: display name -> instrument_key (resolved from the
+        Upstox instrument master)."""
+        self.api = api
+        self.keys = dict(instruments)          # display -> key
+        self._names = {v: k for k, v in self.keys.items()}
+        self._ltp: dict[str, float] = {}
+        self._bars: dict[str, list[Bar]] = {k: [] for k in instruments}
+        self._open_bar: dict[str, Bar | None] = {k: None for k in instruments}
+        self._last_quote_error = ""
+
+    def now(self) -> datetime:
+        return datetime.now(IST)
+
+    def set_instruments(self, instruments: dict[str, str]) -> None:
+        self.keys = dict(instruments)
+        self._names = {v: k for k, v in self.keys.items()}
+        for k in self.keys:
+            self._bars.setdefault(k, [])
+            self._open_bar.setdefault(k, None)
+
+    def ltp(self, instrument: str) -> float:
+        return self._ltp.get(instrument, 0.0)
+
+    def bars(self, instrument: str, minutes: int = 1) -> list[Bar]:
+        return list(self._bars.get(instrument, []))
+
+    @property
+    def last_error(self) -> str:
+        return self._last_quote_error
+
+    def poll(self) -> dict[str, Tick]:
+        """Fetch one round of live quotes; returns fresh ticks.
+
+        On API errors the previous prices are kept and the error is exposed
+        via last_error — the UI shows 'stale' rather than fake numbers.
+        """
+        if not self.keys:
+            return {}
+        try:
+            quotes = self.api.quotes(list(self.keys.values()))
+            self._last_quote_error = ""
+        except Exception as e:
+            self._last_quote_error = str(e)
+            return {}
+        out: dict[str, Tick] = {}
+        now = self.now()
+        for key, q in quotes.items():
+            name = self._names.get(key, key)
+            self._ltp[name] = q.last_price
+            self._accumulate(name, now, q.last_price, q.volume)
+            out[name] = Tick(ts=now, ltp=q.last_price)
+        return out
+
+    def _accumulate(self, name: str, now: datetime, px: float, vol: float) -> None:
+        minute = now.replace(second=0, microsecond=0)
+        cur = self._open_bar[name]
+        if cur is None or cur.ts != minute:
+            if cur is not None:
+                self._bars[name].append(cur)
+                if len(self._bars[name]) > 1500:
+                    self._bars[name] = self._bars[name][-1500:]
+            self._open_bar[name] = Bar(ts=minute, open=px, high=px, low=px,
+                                       close=px, volume=max(vol, 1.0))
+        else:
+            cur.high = max(cur.high, px)
+            cur.low = min(cur.low, px)
+            cur.close = px
+            cur.volume = vol or cur.volume
+
+    def option_greeks(self, instrument: str) -> dict:
+        """Passthrough from the option chain — only when the caller has
+        fetched it (see options.py). Never synthesised."""
+        return {}
+
+
+# --------------------------------------------------------------------- #
+# TEST HARNESS — offline self-test only, not used by the GUI
+# --------------------------------------------------------------------- #
+class SimFeedProvider(FeedProvider):
+    """Deterministic regime-switching synthetic feed (SELF-TEST ONLY).
+
+    This is the app's unit-test fixture, not product data. The GUI never
+    constructs it: with no broker connected, live mode shows no data.
     """
 
     def __init__(self, instruments: dict[str, float], seed: int = 7,
@@ -51,18 +136,16 @@ class SimFeedProvider(FeedProvider):
         self._start = start or datetime.now(IST).replace(
             hour=9, minute=15, second=0, microsecond=0)
         self._tick_count = 0
-        self.speed = speed            # virtual seconds advanced per tick() call
+        self.speed = speed
         self.volatility = volatility
         self._bars: dict[str, list[Bar]] = {k: [] for k in instruments}
         self._bar_open: dict[str, Bar | None] = {k: None for k in instruments}
-        self._regime = 1              # +1 trend up, -1 trend down, 0 range
-        self._regime_left = 40        # ticks left in this regime
+        self._regime = 1
+        self._regime_left = 40
 
-    # ---- clock ----------------------------------------------------------
     def now(self) -> datetime:
         return self._start + timedelta(seconds=self._tick_count * self.speed)
 
-    # ---- feed -----------------------------------------------------------
     def ltp(self, instrument: str) -> float:
         return self._prices.get(instrument, 0.0)
 
@@ -70,7 +153,6 @@ class SimFeedProvider(FeedProvider):
         return list(self._bars.get(instrument, []))
 
     def tick(self) -> dict[str, Tick]:
-        """Advance the virtual market one step; returns fresh ticks."""
         self._tick_count += 1
         self._regime_left -= 1
         if self._regime_left <= 0:
@@ -106,50 +188,31 @@ class SimFeedProvider(FeedProvider):
             cur.volume += 1
 
     def flush_open_bars(self) -> None:
-        """Close any in-progress bars (used at end of self-test)."""
         for name, b in self._bar_open.items():
             if b is not None:
                 self._bars[name].append(b)
                 self._bar_open[name] = None
 
 
-class UpstoxFeedProvider(FeedProvider):
-    """Official Upstox websocket feed (verified flow, unverified details raise).
+class UpstoxWebsocketFeed:
+    """Official websocket feed (verified flow) — production streaming path.
 
-    Verified (Upstox developer docs, Sept 2026):
-      1. GET market data feed authorization via upstox_client.WebsocketApi
-         .get_market_data_feed_authorize('2.0') -> authorized_redirect_uri
-      2. Connect websockets to that URI.
-      3. Subscribe with JSON:
-         {"guid": "...", "method": "sub",
-          "data": {"mode": "ltpc|quote|full|option_greeks",
-                   "instrumentKeys": ["NSE_INDEX|Nifty 50", ...]}}
-      4. Messages are protobuf FeedResponse frames (MarketDataFeed proto).
+    Verified: authorize via upstox_client.WebsocketApi
+    .get_market_data_feed_authorize('2.0') -> authorized_redirect_uri;
+    subscribe JSON {"guid","method":"sub","data":{"mode","instrumentKeys"}};
+    frames are protobuf FeedResponse.
 
-    UNKNOWN / must re-verify before production use:
-      - exact .proto schema version -> download from Upstox docs and compile
-        with protoc into MarketDataFeed_pb2 (not shipped here).
-      - reconnect/backoff semantics, heartbeat behaviour.
-      - which modes are enabled for your app/subscription.
+    UNKNOWN until the official MarketDataFeed proto is compiled to
+    MarketDataFeed_pb2 (see README) — decode_protobuf raises until then.
     """
 
-    def __init__(self, access_token: str, instruments: dict[str, str]) -> None:
+    def __init__(self, access_token: str, instruments: dict[str, str],
+                 mode: str = "ltpc") -> None:
         self.access_token = access_token
-        self.instrument_keys = dict(instruments)   # display name -> instrument_key
-        self._prices: dict[str, float] = {}
-        self._bars: dict[str, list[Bar]] = {k: [] for k in instruments}
+        self.instrument_keys = dict(instruments)
+        self.mode = mode
         self._connected = False
 
-    def now(self) -> datetime:
-        return datetime.now(IST)
-
-    def ltp(self, instrument: str) -> float:
-        return self._prices.get(instrument, 0.0)
-
-    def bars(self, instrument: str, minutes: int = 1) -> list[Bar]:
-        return list(self._bars.get(instrument, []))
-
-    # -- connection (run inside its own QThread/async loop) ---------------
     def authorize(self):
         try:
             import upstox_client
@@ -161,21 +224,17 @@ class UpstoxFeedProvider(FeedProvider):
         api = upstox_client.WebsocketApi(upstox_client.ApiClient(config))
         return api.get_market_data_feed_authorize("2.0")
 
-    def subscription_payload(self, mode: str = "ltpc") -> bytes:
+    def subscription_payload(self) -> bytes:
+        import json
         return json.dumps({
             "guid": "kalvex-pro",
             "method": "sub",
-            "data": {"mode": mode,
+            "data": {"mode": self.mode,
                      "instrumentKeys": list(self.instrument_keys.values())},
         }).encode("utf-8")
 
     @staticmethod
     def decode_protobuf(frame: bytes) -> dict:
-        """Decode a FeedResponse protobuf frame.
-
-        Requires MarketDataFeed_pb2 generated from the OFFICIAL proto file
-        (compile with protoc — see README). Returns a plain dict.
-        """
         try:
             import MarketDataFeed_pb2 as pb  # type: ignore
         except ImportError as e:
@@ -188,8 +247,8 @@ class UpstoxFeedProvider(FeedProvider):
         msg.ParseFromString(frame)
         return MessageToDict(msg)
 
-    def connect(self) -> None:
-        """Blocking websocket loop — call from a worker thread."""
+    def connect(self, on_message) -> None:
+        """Blocking websocket loop — run in a worker thread."""
         import asyncio
 
         try:
@@ -201,19 +260,9 @@ class UpstoxFeedProvider(FeedProvider):
             auth = self.authorize()
             uri = auth.data.authorized_redirect_uri
             async with websockets.connect(uri) as ws:
-                await ws.send(self.subscription_payload("ltpc"))
+                await ws.send(self.subscription_payload())
                 self._connected = True
                 async for frame in ws:
-                    data = self.decode_protobuf(frame)
-                    self._on_message(data)
+                    on_message(self.decode_protobuf(frame))
 
         asyncio.run(_run())
-
-    def _on_message(self, data: dict) -> None:
-        # Shape verified as FeedResponse; per-key field names come from the
-        # official proto (UNKNOWN until compiled) — parse defensively.
-        for key, payload in (data.get("data") or {}).items():
-            ltp = payload.get("ltpc", {}).get("lastTradedPrice")
-            if ltp is not None:  # protobuf int64 price in paise/cents — scale
-                # UNKNOWN: price scale per proto docs (verify: 100ths).
-                self._prices[key] = float(ltp) / 100.0

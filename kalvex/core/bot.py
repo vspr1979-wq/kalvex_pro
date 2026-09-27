@@ -28,12 +28,12 @@ from PySide6.QtCore import Signal as QtSignal
 
 from kalvex.core import indicators as ind
 from kalvex.core.db import Database, ist_now_str
-from kalvex.core.instruments import DEFAULT_BOOK
 from kalvex.core.models import (
     Bar, BotMode, BotState, OrderRequest, OrderSource, OrderType, Position,
     Side, Signal, Stage,
 )
-from kalvex.core.options import pick_strike, time_exit_due
+from kalvex.core.options import pick_strike_from_contracts, time_exit_due
+from kalvex.core.upstox_api import UpstoxApi
 from kalvex.core.risk import RiskConfig, RiskManager
 from kalvex.core.self_improve import review_strategy
 from kalvex.core.strategies import ALL_STRATEGIES, Strategy, StrategyContext
@@ -56,11 +56,13 @@ class BotWorker(QThread):
         super().__init__(parent)
         self.db = db
         self.feed = feed
-        self.broker = broker
+        self.broker = broker              # PaperEngine (always available)
+        self.live_broker = None           # LiveBrokerAdapter (set when connected)
+        self.api: UpstoxApi | None = None # live REST client (quotes/contracts)
         self.mode = mode
         self.cycle_seconds = cycle_seconds
         self.risk = RiskManager(risk_cfg)
-        self.book = dict(instruments or DEFAULT_BOOK)
+        self.book: dict = dict(instruments or {})   # display -> InstrumentSpec
         self.strategies: dict[str, Strategy] = {}
         self.pending_signals: list[Signal] = []
         self._lock = threading.Lock()   # guards broker state across threads
@@ -89,6 +91,37 @@ class BotWorker(QThread):
                 params = json.loads(row["params"] or "{}")
             self.strategies[key] = cls(params)
             self.reviews_since[key] = 0
+
+    # ---- mode switching / execution target -----------------------------
+    @property
+    def execution_target(self) -> OrderSource:
+        """Where orders actually go.
+
+        PAPER mode -> always simulated fills (even with live quotes).
+        SEMI/AUTO  -> LIVE only when the broker is connected AND the user
+        opted in to live routing; otherwise paper (clearly labelled).
+        """
+        live_ok = (self.live_broker is not None
+                   and self.db.get_setting("live_enabled", "0") == "1")
+        if self.mode in (BotMode.SEMI_AUTO, BotMode.AUTO) and live_ok:
+            return OrderSource.LIVE
+        return OrderSource.PAPER
+
+    def set_mode(self, mode: BotMode, live_enabled: bool = False) -> None:
+        self.mode = mode
+        self.db.set_setting("live_enabled", "1" if live_enabled else "0")
+        self.db.log("INFO", "Bot", "MODE_CHANGE",
+                    f"mode={mode.value} execution={self.execution_target.value}")
+
+    def set_live_broker(self, adapter) -> None:
+        self.live_broker = adapter
+
+    def set_api(self, api: UpstoxApi | None) -> None:
+        self.api = api
+
+    def set_book(self, instruments: dict) -> None:
+        """Replace the instrument book (resolved from the Upstox master)."""
+        self.book = dict(instruments)
 
     def set_strategy_enabled(self, key: str, enabled: bool) -> None:
         self.db.execute("UPDATE strategies SET enabled=? WHERE key=?",
@@ -283,6 +316,28 @@ class BotWorker(QThread):
             params={"segment": spec.segment if spec else "EQ"},
         )
 
+    def _option_contracts(self, spec) -> list:
+        """Live option contracts for the underlying (empty on failure —
+        the caller refuses to trade rather than guess)."""
+        if self.api is None:
+            self._think(Stage.DECIDE, "SYSTEM",
+                        "Options: Upstox API not connected — cannot resolve "
+                        "contracts. Trading blocked (no synthetic strikes).")
+            return []
+        try:
+            contracts = self.api.option_contracts(spec.key)
+        except Exception as e:
+            self._think(Stage.DECIDE, "SYSTEM",
+                        f"Options: Upstox contract fetch failed: {e}")
+            return []
+        expiries = sorted({c.expiry for c in contracts if c.expiry})
+        want = self.db.get_setting("options_expiry", "current")
+        if expiries:
+            expiry = expiries[0] if want == "current" else (
+                expiries[1] if len(expiries) > 1 else expiries[0])
+            contracts = [c for c in contracts if c.expiry == expiry]
+        return contracts
+
     def _instrument_for(self, strat: Strategy) -> str:
         # v1: strategies bound to a user-selected instrument (default first)
         return self.db.get_setting(f"instrument_for_{strat.key}",
@@ -293,18 +348,26 @@ class BotWorker(QThread):
         spec = self.book.get(sig.instrument)
         lot = spec.lot_size if spec else self.risk.config.lot_size
 
-        # Options path: convert directional signal into a defined-risk
-        # option buy (v1: buying only) before sizing.
+        # Options path: convert the directional signal into a defined-risk
+        # option buy (v1: buying only). Strike/lot/expiry come from the LIVE
+        # Upstox contract list — nothing is synthesised.
         if self.db.get_setting("options_enabled", "0") == "1" and spec and spec.is_index:
             bias = "CE" if sig.side == Side.BUY else "PE"
             width = int(self.db.get_setting("options_otm_width", "0"))
-            req_opt = pick_strike(sig.entry, spec, bias, otm_width=width,
-                                  expiry="current")
-            self._think(Stage.DECIDE, sig.strategy_key, req_opt.thought)
+            contracts = self._option_contracts(spec)
+            contract, thought = pick_strike_from_contracts(
+                contracts, sig.entry, bias, otm_width=width)
+            self._think(Stage.DECIDE, sig.strategy_key, thought)
+            if contract is None:
+                return   # no contract -> no trade (never guess a strike)
             sig.is_options = True
-            sig.option_meta = {"strike": req_opt.strike,
-                               "type": req_opt.option_type,
-                               "expiry": req_opt.expiry}
+            sig.option_meta = {
+                "strike": contract.strike_price, "type": contract.instrument_type,
+                "expiry": contract.expiry, "instrument_key": contract.instrument_key,
+                "trading_symbol": contract.trading_symbol,
+                "lot_size": contract.lot_size,
+                "freeze_quantity": contract.freeze_quantity}
+            lot = contract.lot_size   # exchange lot size, never guessed
 
         funds = self.broker.get_funds()
         decision = self.risk.evaluate(sig, open_positions,
@@ -343,7 +406,7 @@ class BotWorker(QThread):
                         "Semi-auto: user REJECTED the signal. No order sent.")
 
     def _place_entry(self, sig: Signal, qty: int, max_hold: int) -> None:
-        source = OrderSource.LIVE if self.mode == BotMode.AUTO else OrderSource.PAPER
+        source = self.execution_target
 
         # Rate-limit gate at execution time (verified Upstox cap: 10/sec).
         ok, why = self.risk.throttle.allow()
@@ -353,32 +416,47 @@ class BotWorker(QThread):
             return
 
         tag = f"KLV-{datetime.now(IST):%Y%m%d}-{sig.strategy_key}-{uuid.uuid4().hex[:6]}"
-        # Prefer LIMIT entries (policy: raw MARKET not sent live).
+        # Options trade the CONTRACT key; spot strategies trade the
+        # underlying instrument key. Prefer LIMIT entries (verified policy:
+        # raw MARKET is refused by the live adapter).
+        order_instrument = sig.instrument
+        if sig.is_options and sig.option_meta:
+            order_instrument = (sig.option_meta.get("instrument_key")
+                                or sig.option_meta.get("trading_symbol")
+                                or sig.instrument)
         req = OrderRequest(
-            instrument=sig.instrument, side=sig.side,
+            instrument=order_instrument, side=sig.side,
             order_type=OrderType.LIMIT, qty=qty, price=sig.entry,
             strategy_key=sig.strategy_key, source=source, tag=tag,
         )
-        o = self.broker.place_order(req)
+        if source == OrderSource.LIVE and self.live_broker is not None:
+            o = self.live_broker.place_order(req)
+            self._think(Stage.EXECUTE, sig.strategy_key,
+                        f"LIVE order sent via Upstox (X-Algo-Name={self.live_broker.algo_name}): "
+                        f"{sig.side.value} {qty} {order_instrument} LIMIT {sig.entry:,.2f}, "
+                        f"SL {sig.sl:,.2f}, target {sig.target:,.2f}, tag {tag}.")
+        else:
+            o = self.broker.place_order(req)
 
         # Paper: the engine OWNS the position lifecycle — fill immediately at
         # the signal price and attach the trade plan to the resulting
-        # position. (Live: position is provisional until broker confirm.)
-        if hasattr(self.broker, "_fill"):
+        # position. (Live: position is provisional until broker confirm —
+        # NEVER settled through the paper matching engine.)
+        if source == OrderSource.PAPER and hasattr(self.broker, "_fill"):
             self.broker._fill(o, sig.entry)
 
         pos = None
         if hasattr(self.broker, "positions"):
-            pos = self.broker.positions.get(sig.instrument)
+            pos = self.broker.positions.get(order_instrument)
         if pos is None:
             pos = Position(
-                instrument=sig.instrument,
+                instrument=order_instrument,
                 qty=qty if sig.side == Side.BUY else -qty,
                 avg_price=sig.entry, strategy_key=sig.strategy_key,
                 source=source, opened_at=ist_now_str(),
             )
             if hasattr(self.broker, "positions"):
-                self.broker.positions[sig.instrument] = pos
+                self.broker.positions[order_instrument] = pos
 
         pos.sl = sig.sl
         pos.target = sig.target

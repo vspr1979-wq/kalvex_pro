@@ -52,7 +52,7 @@ class ActivityPage(QWidget):
         root.addWidget(self.tabs, stretch=1)
 
         root.addWidget(hint_label(
-            "Paper fills are simulated from LTP with slippage + fee model; "
+            "Paper fills are simulated from LIVE LTP with slippage + fee model; "
             "live fills will come from the broker. Every order carries a "
             "client tag used for restart dedupe. v1 order policy: LIMIT / "
             "SL-L only — raw MARKET not sent (UNKNOWN per current algo rules)."))

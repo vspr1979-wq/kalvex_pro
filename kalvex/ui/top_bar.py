@@ -47,7 +47,9 @@ class TopBar(QFrame):
         brand_box.addWidget(sub)
         root.addLayout(brand_box)
 
-        root.addWidget(self._chip_frame("FEED", "SIM · demo", "chipViolet"))
+        self.feed_chip, self.feed_val = self._chip(
+            "FEED", "NO DATA · disconnected", "chipViolet")
+        root.addWidget(self.feed_chip)
         self.funds_chip, self.funds_val = self._chip("FUNDS", "₹ —", "")
         root.addWidget(self.funds_chip)
         self.pnl_chip, self.pnl_val = self._chip("P&L TODAY", "₹ —", "chipCyan")
@@ -150,7 +152,14 @@ class TopBar(QFrame):
             self.start_btn.setText("▶ START BOT")
 
     def set_feed(self, text: str) -> None:
-        pass  # legacy stub
+        self.feed_val.setText(text)
+        live = text.startswith("LIVE")
+        self.feed_val.setStyleSheet(
+            f"color: {'#35D0C8' if live else '#8B93A1'};")
+        self.feed_val.setToolTip(
+            "Live Upstox quotes (1 poll/sec)" if live else
+            "No market data — connect the broker. The app never shows "
+            "synthetic prices.")
 
     def set_broker(self, describe: str, state: str) -> None:
         """state: ConnectionState value — drives chip colour + button label."""
