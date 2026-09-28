@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalvex-pro"
+version = "0.1.0"
+description = "Research-first intraday long-options platform for NSE and BSE"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Kalvex Pro" }]
+dependencies = []
+
+[project.optional-dependencies]
+research = [
+  "pandas>=2.0",
+  "numpy>=1.24",
+  "pyqlib>=0.9.7",
+  "rdagent>=1.0.0",
+  "pyyaml>=6.0",
+]
+live = [
+  "websocket-client>=1.8",
+  "protobuf>=4.25",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+all = [
+  "kalvex-pro[research,live,dev]",
+]
+
+[project.scripts]
+kalvex = "kalvex_pro.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

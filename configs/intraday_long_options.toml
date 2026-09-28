@@ -1,0 +1,53 @@
+[market]
+# Both exchanges are supported; options are selected from the live instrument master.
+exchanges = ["NSE", "BSE"]
+index_underlyings = ["nifty", "sensex", "banknifty", "finnifty", "midcapnifty"]
+include_fno_stocks = true
+option_types = ["CE", "PE"]
+
+[research]
+bar_interval = "5minute"
+underlying_bar_unit = "minutes"
+underlying_bar_interval = 5
+train_days = 504
+validation_days = 126
+test_days = 126
+walk_forward = true
+exclude_expiry_day = true
+minimum_days_to_expiry = 1
+maximum_days_to_expiry = 30
+
+[contract_filter]
+# Keep these limits conservative until liquidity data has been audited.
+minimum_volume = 0
+minimum_open_interest = 0
+maximum_spread_bps = 150
+minimum_delta_abs = 0.25
+maximum_delta_abs = 0.75
+max_strikes_from_atm = 5
+
+[risk]
+long_options_only = true
+max_open_positions = 1
+max_lots_per_trade = 1
+risk_per_trade_fraction = 0.005
+max_daily_loss_fraction = 0.02
+max_consecutive_losses = 3
+no_averaging_down = true
+force_square_off_time = "15:15:00+05:30"
+last_entry_time = "14:45:00+05:30"
+
+[backtest]
+entry_fill = "ask_plus_slippage"
+exit_fill = "bid_minus_slippage"
+slippage_bps = 20
+fee_fraction_of_premium = 0.001
+initial_capital = 100000.0
+max_holding_minutes = 90
+
+[execution]
+mode = "shadow"
+allow_order_placement = false
+require_manual_promotion = true
+require_static_ip_check = true
+algo_name = "KALVEX_LONG_OPTIONS"
